@@ -7,10 +7,11 @@
 //   4. Only the owner sends `move` (the server drops moves from anyone else).
 // Non-owners follow received poses with frame-rate independent exponential smoothing.
 
-import { Color, Group, Quaternion, Vector3, type Object3D } from 'three';
+import { Color, Group, Mesh, MeshStandardMaterial, Quaternion, Vector3, type Object3D } from 'three';
 import type { ObjectState, Pose } from '../../shared/protocol.ts';
 import type { ObjectKind } from '../../shared/roomConfig.ts';
 import type { StateMsgInput } from '../net/netClient.ts';
+import { modelRadius, type ModelLoader } from '../scene/modelLoader.ts';
 import { buildObjectMesh, objectSignature, type BuiltObject } from '../scene/objectMeshes.ts';
 import { readPose, smoothing, toPose } from '../util/pose.ts';
 
@@ -66,6 +67,8 @@ export interface ObjectManagerDeps {
   selfId(): string | null;
   isPeerPresent(id: string): boolean;
   peerColor(id: string): string | null;
+  /** Loads glTF models for `kind: model` objects. */
+  models?: ModelLoader;
 }
 
 export class ObjectManager {
@@ -108,6 +111,7 @@ export class ObjectManager {
         o = new SyncedObject(s);
         this.objs.set(s.id, o);
         this.root.add(o.root);
+        if (s.kind === 'model' && s.model) this.loadModel(o, s.model);
       }
       const self = this.deps.selfId();
       // 自分が掴んでいる物 (reset-objects で据え置かれた物) はそのまま
@@ -247,6 +251,39 @@ export class ObjectManager {
     o.localHold = false;
     o.dirty = false;
     this.onLostHold(o.id);
+  }
+
+  /** Replace a model placeholder with the loaded glTF (if the object still exists). */
+  private loadModel(o: SyncedObject, model: NonNullable<ObjectState['model']>): void {
+    const loader = this.deps.models;
+    if (!loader) return;
+    loader
+      .load(model.src)
+      .then((scene) => {
+        if (this.objs.get(o.id) !== o) return; // rebuilt or removed meanwhile
+        scene.scale.multiplyScalar(model.scale);
+        const placeholder = [...o.built.root.children];
+        for (const c of placeholder) {
+          o.built.root.remove(c);
+          (c as Mesh).geometry?.dispose();
+        }
+        o.built.root.add(scene);
+        o.built.root.traverse((x) => (x.userData.objectId = o.id));
+        o.built.materials.length = 0;
+        scene.traverse((x) => {
+          const mesh = x as Mesh;
+          if (!mesh.isMesh) return;
+          for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+            if (m instanceof MeshStandardMaterial) o.built.materials.push(m);
+          }
+        });
+        o.built.grabRadius = model.grabRadius ?? modelRadius(scene);
+        this.refreshHighlights();
+      })
+      .catch((e: unknown) => {
+        console.warn(`[colo] model ${model.src} not loaded:`, e);
+        for (const m of o.built.materials) m.color.set('#d64545'); // keep a visible placeholder
+      });
   }
 
   /** 誰が掴んでいるかを、その人の色の発光で示す。 */

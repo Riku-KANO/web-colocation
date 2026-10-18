@@ -260,3 +260,157 @@ button:disabled {
     bottom: 120px;
   }
 }
+
+/* ---- lobby (branding, rooms, languages) ---- */
+#lobby header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#lobby .logo {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+
+#lobby .identity {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+#lobby .field {
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+#lobby .rooms {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+#lobby .room {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+  background: #1b2232;
+  border: 2px solid transparent;
+}
+
+#lobby .room.on {
+  border-color: var(--accent);
+}
+
+#lobby .room small {
+  color: var(--muted);
+}
+
+#lobby .adhoc input.on {
+  border-color: var(--accent);
+}
+
+#lobby input[type='password'],
+#lobby input[name='room'],
+#lobby input[name='name'],
+#lobby input[name='space'] {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #485266;
+  background: #0f1420;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+#lobby input[readonly] {
+  opacity: 0.7;
+}
+
+#lobby .langs {
+  display: flex;
+  gap: 6px;
+}
+
+#lobby .lang {
+  background: #1b2232;
+  padding: 6px 12px;
+}
+
+#lobby .lang.on {
+  background: var(--accent);
+}
+
+/* ---- hud extras ---- */
+#hud .badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent);
+  font-size: 0.72rem;
+}
+
+/* ---- host settings dialog ---- */
+dialog.settings {
+  border: 0;
+  border-radius: 14px;
+  padding: 0;
+  background: var(--panel);
+  color: var(--text);
+  width: min(420px, calc(100vw - 32px));
+}
+
+dialog.settings::backdrop {
+  background: rgba(10, 14, 20, 0.5);
+}
+
+dialog.settings form {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+}
+
+dialog.settings h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+dialog.settings label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.88rem;
+}
+
+dialog.settings label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+dialog.settings small {
+  color: var(--muted);
+}
+
+dialog.settings input:not([type='checkbox']),
+dialog.settings select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #485266;
+  background: #0f1420;
+  color: var(--text);
+  font: inherit;
+}
+
+dialog.settings .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+button.secondary {
+  background: #4a5262;
+}

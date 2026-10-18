@@ -34,6 +34,9 @@ export interface ClientConfig {
   templates: Array<{ id: string; title: Localized }>;
   allowAdhoc: boolean;
   voiceEnabled: boolean;
+  /** "none" = offline: simple built-in controller/hand shapes. */
   xr: { inputProfilesPath: string | null };
+  /** Limits for custom glTF models (also enforced by the browser while loading). */
+  models: { allowedOrigins: string[]; maxBytes: number };
   allowServerOverride: boolean;
 }

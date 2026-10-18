@@ -181,6 +181,7 @@ export class Room {
         // Relay only between peers that both joined voice, so ICE candidates (IP addresses)
         // never reach people who are not in the call.
         const to = this.peers.get(msg.to);
+        if (!this.config.rules.voice.enabled) return;
         if (!to || msg.to === peerId || peer.info.voice === 'off' || to.info.voice === 'off') return;
         this.sendTo(
           msg.to,

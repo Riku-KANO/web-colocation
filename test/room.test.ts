@@ -155,6 +155,18 @@ describe('Room', () => {
     expect(b.last('config')!.snapshot.strokes).toHaveLength(0);
   });
 
+  it('does not relay voice signalling when voice is disabled for the room', () => {
+    const config = roomConfig();
+    config.rules.voice.enabled = false;
+    const room = new Room(config);
+    const a = new FakePeer('A');
+    const b = new FakePeer('B');
+    room.join('A', a, join('Alice', { hello: { ...join('Alice').hello, voice: 'on' } }));
+    room.join('B', b, join('Bob', { hello: { ...join('Bob').hello, voice: 'on' } }));
+    room.handle('A', { t: 'rtc-offer', to: 'B', sdp: 'x' });
+    expect(b.last('rtc-offer')).toBeUndefined();
+  });
+
   it('exports and imports persistent state', () => {
     const { room } = setup();
     room.handle('A', { t: 'grab', e: E, id: 'cube' });

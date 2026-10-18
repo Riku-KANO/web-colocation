@@ -2,7 +2,7 @@ import { PROTOCOL_VERSION } from '../shared/protocol.ts';
 import type { ClientConfig } from '../shared/clientConfig.ts';
 import { App } from './app.ts';
 import { detectLanguage, setLanguage } from './i18n/index.ts';
-import { showLobby } from './ui/hud.ts';
+import { showLobby } from './ui/lobby.ts';
 import { installEmulatorIfRequested } from './xr/session.ts';
 import './style.css';
 
@@ -17,6 +17,7 @@ const FALLBACK_CONFIG: ClientConfig = {
   allowAdhoc: true,
   voiceEnabled: true,
   xr: { inputProfilesPath: null },
+  models: { allowedOrigins: [], maxBytes: 25 * 1024 * 1024 },
   allowServerOverride: true,
 };
 
@@ -35,7 +36,7 @@ async function main() {
   await installEmulatorIfRequested();
   const client = await fetchClientConfig();
   setLanguage(detectLanguage(client.defaultLanguage));
-  const opts = await showLobby();
+  const opts = await showLobby(client);
   const app = new App(opts, client);
   (window as unknown as { __colo: App }).__colo = app;
   await app.start();

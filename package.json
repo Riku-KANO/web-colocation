@@ -7,10 +7,14 @@
   "scripts": {
     "dev": "vite",
     "dev:https": "HTTPS=1 vite",
+    "dev:example": "COLO_CONFIG=examples/config.yaml vite",
     "build": "tsc && vite build",
     "start": "node server/main.ts",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gen:schema": "node scripts/gen-schema.ts",
+    "hash-passcode": "node scripts/hash-passcode.ts",
+    "make:sample-model": "node scripts/make-sample-model.ts"
   },
   "engines": {
     "node": ">=23.6"

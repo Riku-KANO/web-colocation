@@ -15,11 +15,12 @@ import type { AvatarPose, DeviceKind, ErrorCode, PeerInfo, Pose, RoomSnapshot, S
 import type { RoomConfig, SeatSpec } from '../shared/roomConfig.ts';
 import { BoardManager } from './board/boardManager.ts';
 import { StrokeWriter } from './board/strokeWriter.ts';
-import { t } from './i18n/index.ts';
+import { t, tl } from './i18n/index.ts';
 import { DesktopInput } from './input/desktopInput.ts';
 import { XRInput } from './input/xrInput.ts';
 import { NetClient, defaultServerUrl, type ConnState } from './net/netClient.ts';
 import { Environment } from './scene/environment.ts';
+import { DEFAULT_MODEL_LIMITS, ModelLoader } from './scene/modelLoader.ts';
 import { AvatarManager } from './sync/avatars.ts';
 import { ObjectManager } from './sync/objects.ts';
 import {
@@ -29,7 +30,9 @@ import {
   frameFromTwoPoints,
   frameInFrontOfViewer,
 } from './sync/sharedFrame.ts';
-import { Hud, INKS, type JoinOptions } from './ui/hud.ts';
+import { Hud, INKS } from './ui/hud.ts';
+import type { JoinOptions } from './ui/lobby.ts';
+import { openSettingsDialog } from './ui/settingsDialog.ts';
 import { XRPanel, type PanelButton } from './ui/xrPanel.ts';
 import { toPose, worldToShared } from './util/pose.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
@@ -117,6 +120,7 @@ export class App {
     });
 
     this.objects = new ObjectManager({
+      models: new ModelLoader({ ...DEFAULT_MODEL_LIMITS, ...client.models }),
       send: sendState,
       selfId: () => this.self?.id ?? null,
       isPeerPresent: (id) => this.peers.has(id),
@@ -145,6 +149,7 @@ export class App {
       strokes: this.strokes,
       panel: this.panel,
       inkColor: () => this.self?.color ?? this.ink,
+      inputProfilesPath: client.xr.inputProfilesPath,
       isCalibrating: () => this.calibration !== null,
       onCalibrationPoint: (p) => this.onCalibrationPoint(p),
       onPanelButton: (id) => this.onPanelButton(id),
@@ -169,6 +174,9 @@ export class App {
         setInk: (c) => (this.ink = c),
         voice: () => this.toggleVoice(),
         voiceLeave: () => this.voice.leave(),
+        openSettings: () => {
+          if (this.room) openSettingsDialog(this.room, this.client, (settings) => this.net.sendState({ t: 'room-settings', settings }));
+        },
       },
       support,
       this.ink,
@@ -209,6 +217,15 @@ export class App {
     const seats = this.room?.seats ?? [{ x: 0, z: 0.75, yaw: 0 }];
     const i = index ?? 0;
     return seats[((i % seats.length) + seats.length) % seats.length];
+  }
+
+  private get roomTitle(): string {
+    return this.room ? tl(this.room.title, this.room.id) : this.opts.room;
+  }
+
+  /** Voice is enabled for the deployment and for this room. */
+  get voiceAllowed(): boolean {
+    return this.client.voiceEnabled && (this.room?.rules.voice.enabled ?? true);
   }
 
   private get anchor() {
@@ -339,6 +356,7 @@ export class App {
     this.avatars.reset(snapshot.peers, snapshot.poses, self.id);
     this.avatars.setSelf(self.space, this.device);
     this.voice.mesh.sync(self.id, this.peers.values());
+    if (!this.voiceAllowed && this.voice.state !== 'off') this.voice.leave();
     const seat = this.seatOf(self.seat);
     if (!this.renderer.xr.isPresenting) {
       this.frame.set(desktopFrame(config.anchor), 'desktop');
@@ -376,7 +394,13 @@ export class App {
 
   private refreshHud(): void {
     if (!this.hud) return;
-    this.hud.setStatus(this.opts.room, this.net.state, this.net.rttMs);
+    this.hud.setStatus(this.roomTitle, this.net.state, this.net.rttMs);
+    this.hud.setPermissions({
+      clearBoard: this.can('clearBoard'),
+      resetObjects: this.can('resetObjects'),
+      editSettings: this.can('editSettings') && !!this.room,
+      voice: this.voiceAllowed,
+    });
     this.hud.setPeers([...this.peers.values()], this.self?.id ?? null, (id) => this.voice.mesh.linkState(id));
     this.hud.setVoice({ state: this.voice.state, busy: this.voice.busy, listenOnly: !this.voice.hasMic });
   }
@@ -482,51 +506,51 @@ export class App {
   }
 
   private panelState(): { status: string[]; buttons: PanelButton[] } {
-    const n = this.peers.size;
-    const conn = this.net.state === 'open' ? `${n}人` : '切断中';
-    const kindLabel = {
-      desktop: '-',
-      auto: '仮置き (正面)',
-      'one-point': '1点 (自分の机)',
-      'two-point': '同室 2点',
-    }[this.frame.kind];
+    const conn = this.net.state === 'open' ? t('xr.people', { n: this.peers.size }) : t('xr.offline');
     const c = this.calibration;
     const hint = !c
-      ? '物はトリガー/ピンチで掴む。ペン先をボードへ'
+      ? t('xr.hint.idle')
       : c.kind === 'one-point'
-        ? '机の中心に先端を当ててトリガー'
+        ? t('xr.hint.onePoint')
         : !c.a
-          ? '点A (1/2) をタッチしてトリガー'
-          : '点B (2/2) をタッチしてトリガー';
+          ? t('xr.hint.pointA')
+          : t('xr.hint.pointB');
     const v = this.voice;
     const inVoice = [...this.peers.values()].filter((p) => p.id !== this.self?.id && p.voice !== 'off').length;
+    const speaking = this.speakingNames.length ? t('xr.voice.speaking', { names: this.speakingNames.join(', ') }) : '';
     const voiceLine =
       v.state === 'off'
-        ? `音声: 未参加${inVoice ? ` (${inVoice}人が通話中)` : ''}`
-        : `音声: ${v.state === 'on' ? 'マイク ON' : v.hasMic ? 'ミュート中' : '聞くだけ'}${
-            this.speakingNames.length ? ` · 話し中: ${this.speakingNames.join(', ')}` : ''
-          }`;
+        ? inVoice
+          ? t('xr.voice.offWithPeers', { n: inVoice })
+          : t('xr.voice.off')
+        : (v.state === 'on' ? t('xr.voice.on') : v.hasMic ? t('xr.voice.muted') : t('xr.voice.listen')) + speaking;
     const voiceLabel = v.busy
-      ? 'マイク確認中…'
+      ? t('voice.checking')
       : v.state === 'off'
-        ? '音声に参加'
+        ? t('voice.join')
         : v.state === 'on'
-          ? 'ミュート'
+          ? t('voice.mute')
           : v.hasMic
-            ? 'ミュート解除'
-            : 'マイクを使う';
+            ? t('voice.unmute')
+            : t('voice.useMic');
+    const buttons: PanelButton[] = [
+      { id: 'place', label: t('xr.btn.place'), active: c?.kind === 'one-point' },
+      { id: 'colocate', label: t('xr.btn.colocate'), active: c?.kind === 'two-point' },
+      { id: 'front', label: t('xr.btn.front') },
+      { id: 'table', label: this.env.tableVisible ? t('xr.btn.hideTable') : t('xr.btn.showTable') },
+      { id: 'reset', label: t('xr.btn.reset'), disabled: !this.can('resetObjects') },
+      { id: 'clear', label: t('xr.btn.clear'), disabled: !this.can('clearBoard') },
+    ];
+    if (this.voiceAllowed) buttons.push({ id: 'voice', label: voiceLabel, active: v.state === 'on', disabled: v.busy });
+    buttons.push({ id: 'exit', label: t('xr.btn.exit') });
     return {
-      status: [`${this.opts.room} · ${conn}`, `配置: ${kindLabel}${this.frame.anchored ? ' ⚓' : ''}`, hint, voiceLine],
-      buttons: [
-        { id: 'place', label: 'ここに机 (1点)', active: c?.kind === 'one-point' },
-        { id: 'colocate', label: '同室合わせ (2点)', active: c?.kind === 'two-point' },
-        { id: 'front', label: '正面に置く' },
-        { id: 'table', label: this.env.tableVisible ? '机を隠す' : '机を表示' },
-        { id: 'reset', label: '物を戻す' },
-        { id: 'clear', label: 'ボード消去' },
-        { id: 'voice', label: voiceLabel, active: v.state === 'on', disabled: v.busy },
-        { id: 'exit', label: 'XR を終了' },
+      status: [
+        `${this.roomTitle} · ${conn}`,
+        t('xr.placement', { kind: t(`xr.kind.${this.frame.kind}`) }) + (this.frame.anchored ? ' ⚓' : ''),
+        hint,
+        this.voiceAllowed ? voiceLine : '',
       ],
+      buttons,
     };
   }
 

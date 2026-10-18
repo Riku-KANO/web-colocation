@@ -1,85 +1,13 @@
-// 画面上の UI (ロビー・状態表示・ボタン)。XR 中は使えないので、同等の操作は XRPanel にもある。
+// On-screen UI (status, participants, buttons). XR has the same actions on the wrist panel.
 
 import type { PeerInfo, VoiceState } from '../../shared/protocol.ts';
+import { t } from '../i18n/index.ts';
 import type { ConnState } from '../net/netClient.ts';
 import type { LinkState } from '../voice/mesh.ts';
 import type { XRSupport } from '../xr/session.ts';
+import { h, replaceChildren } from './dom.ts';
 
-export interface JoinOptions {
-  name: string;
-  room: string;
-  space: string;
-  color: string;
-}
-
-export const PALETTE = ['#e4572e', '#4c8bf5', '#3fb27f', '#f2a541', '#9b5de5', '#f15bb5', '#00bbf9', '#2b2d42'];
 export const INKS = ['#222222', '#d62828', '#1d4ed8', '#15803d', '#f59e0b'];
-
-const STORAGE_KEY = 'colo.profile';
-
-function loadProfile(): Partial<JoinOptions> {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Partial<JoinOptions>;
-  } catch {
-    return {};
-  }
-}
-
-function saveProfile(p: JoinOptions): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-  } catch {
-    // プライベートモードなどでは保存できなくてよい
-  }
-}
-
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
-/** URL パラメータ > 前回の入力 > 既定値 の順で初期値を決める。autojoin=1 ならロビーを飛ばす。 */
-export function showLobby(): Promise<JoinOptions> {
-  const params = new URLSearchParams(location.search);
-  const saved = loadProfile();
-  const initial: JoinOptions = {
-    name: params.get('name') ?? saved.name ?? '',
-    room: params.get('room') ?? saved.room ?? 'demo',
-    space: params.get('space') ?? saved.space ?? '',
-    color: params.get('color') ?? saved.color ?? '',
-  };
-  if (!/^#[0-9a-fA-F]{6}$/.test(initial.color)) initial.color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
-  if (params.get('autojoin') === '1' && initial.name) return Promise.resolve(initial);
-
-  const root = document.getElementById('lobby')!;
-  root.hidden = false;
-  root.innerHTML = `
-    <form class="card">
-      <h1>WebXR コロケーション</h1>
-      <p class="sub">同じルーム名の人と、机の上の物・ペン・ホワイトボードを共有します。</p>
-      <label>名前<input name="name" maxlength="32" required value="${esc(initial.name)}" placeholder="例: 山田"></label>
-      <label>ルーム<input name="room" maxlength="64" required value="${esc(initial.room)}"></label>
-      <label>同室 ID <small>(任意・同じ物理空間にいる人同士で同じ文字列)</small>
-        <input name="space" maxlength="64" value="${esc(initial.space)}" placeholder="例: office-3F"></label>
-      <div class="swatches">${PALETTE.map(
-        (c) => `<label class="swatch" style="--c:${c}"><input type="radio" name="color" value="${c}" ${c === initial.color ? 'checked' : ''}></label>`,
-      ).join('')}</div>
-      <button type="submit">参加する</button>
-    </form>`;
-  const form = root.querySelector('form')!;
-  return new Promise((resolve) => {
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const fd = new FormData(form);
-      const opts: JoinOptions = {
-        name: String(fd.get('name') ?? '').trim(),
-        room: String(fd.get('room') ?? '').trim() || 'demo',
-        space: String(fd.get('space') ?? '').trim(),
-        color: String(fd.get('color') ?? initial.color),
-      };
-      saveProfile(opts);
-      root.hidden = true;
-      resolve(opts);
-    });
-  });
-}
 
 export interface HudHandlers {
   enterAR(): void;
@@ -87,104 +15,135 @@ export interface HudHandlers {
   resetObjects(): void;
   clearBoard(): void;
   setInk(color: string): void;
-  /** 音声に参加 / ミュート切り替え。 */
+  /** Join voice / toggle mute. */
   voice(): void;
   voiceLeave(): void;
+  openSettings(): void;
 }
 
 export interface VoiceView {
   state: VoiceState;
   busy: boolean;
-  /** 聞くだけ (マイク無し) で参加しているか。 */
+  /** Joined without a microphone (listening only). */
   listenOnly: boolean;
+}
+
+export interface PermissionView {
+  clearBoard: boolean;
+  resetObjects: boolean;
+  editSettings: boolean;
+  voice: boolean;
 }
 
 export class Hud {
   private readonly el = document.getElementById('hud')!;
-  private readonly status: HTMLElement;
-  private readonly peersEl: HTMLElement;
-  private readonly toastEl: HTMLElement;
+  private readonly status = h('div', { class: 'status' });
+  private readonly peersEl = h('ul', { class: 'peers' });
+  private readonly toastEl = h('div', { class: 'toast', hidden: true });
+  private readonly bottom: HTMLElement;
+  private readonly resetBtn: HTMLButtonElement;
+  private readonly clearBtn: HTMLButtonElement;
+  private readonly settingsBtn: HTMLButtonElement;
+  private readonly voiceWrap: HTMLElement;
   private readonly voiceBtn: HTMLButtonElement;
   private readonly voiceLeaveBtn: HTMLButtonElement;
   private toastTimer: number | undefined;
   private speakingKey = '';
 
-  constructor(h: HudHandlers, support: XRSupport, ink: string) {
+  constructor(handlers: HudHandlers, support: XRSupport, ink: string) {
+    const btn = (label: string, onClick: () => void, attrs: Record<string, string | boolean> = {}) =>
+      h('button', { type: 'button', ...attrs, on: { click: onClick } }, label);
+    this.resetBtn = btn(t('hud.reset'), () => handlers.resetObjects());
+    this.clearBtn = btn(t('hud.clear'), () => handlers.clearBoard());
+    this.settingsBtn = btn(t('hud.settings'), () => handlers.openSettings(), { class: 'secondary', hidden: true });
+    this.voiceBtn = btn(t('voice.join'), () => handlers.voice());
+    this.voiceLeaveBtn = btn(t('voice.leave'), () => handlers.voiceLeave(), { class: 'secondary', hidden: true });
+    this.voiceWrap = h('span', { class: 'voice' }, this.voiceBtn, this.voiceLeaveBtn);
+    const inks = INKS.map((c) =>
+      h('button', {
+        type: 'button',
+        class: c === ink ? 'ink on' : 'ink',
+        'aria-label': t('hud.ink', { color: c }),
+        vars: { '--c': c },
+        on: {
+          click: (e) => {
+            handlers.setInk(c);
+            for (const b of this.el.querySelectorAll('.ink')) b.classList.toggle('on', b === e.currentTarget);
+          },
+        },
+      }),
+    );
+    this.bottom = h(
+      'div',
+      { class: 'panel bottom' },
+      h(
+        'div',
+        { class: 'row' },
+        btn(t('hud.enterAR'), () => handlers.enterAR(), { disabled: !support.ar, title: support.ar ? '' : t('hud.arUnsupported') }),
+        btn(t('hud.enterVR'), () => handlers.enterVR(), { disabled: !support.vr, title: support.vr ? '' : t('hud.vrUnsupported') }),
+        this.resetBtn,
+        this.clearBtn,
+        this.voiceWrap,
+        this.settingsBtn,
+      ),
+      h('div', { class: 'row inks' }, ...inks, h('span', { class: 'help' }, t('hud.help'))),
+    );
     this.el.hidden = false;
-    this.el.innerHTML = `
-      <div class="panel top">
-        <div class="status"></div>
-        <ul class="peers"></ul>
-      </div>
-      <div class="panel bottom">
-        <div class="row">
-          <button data-act="ar" ${support.ar ? '' : 'disabled'} title="${support.ar ? '' : 'この端末/ブラウザは immersive-ar 非対応'}">AR で入る</button>
-          <button data-act="vr" ${support.vr ? '' : 'disabled'}>VR で入る</button>
-          <button data-act="reset">物を戻す</button>
-          <button data-act="clear">ボード消去</button>
-          <span class="voice">
-            <button data-act="voice">音声に参加</button>
-            <button data-act="voice-leave" class="secondary" hidden>音声を切る</button>
-          </span>
-        </div>
-        <div class="row inks">${INKS.map(
-          (c) => `<button class="ink ${c === ink ? 'on' : ''}" data-ink="${c}" style="--c:${c}" aria-label="インク ${c}"></button>`,
-        ).join('')}<span class="help">ドラッグ: 移動 / Shift+ドラッグ: 上下 / ドラッグ中ホイール: 回転 / ボード上ドラッグ: 描く</span></div>
-      </div>
-      <div class="toast" hidden></div>`;
-    this.status = this.el.querySelector('.status')!;
-    this.peersEl = this.el.querySelector('.peers')!;
-    this.toastEl = this.el.querySelector('.toast')!;
-    this.voiceBtn = this.el.querySelector('[data-act="voice"]')!;
-    this.voiceLeaveBtn = this.el.querySelector('[data-act="voice-leave"]')!;
-
-    this.el.addEventListener('click', (e) => {
-      const t = (e.target as HTMLElement).closest('button');
-      if (!t) return;
-      const act = t.dataset.act;
-      if (act === 'ar') h.enterAR();
-      else if (act === 'vr') h.enterVR();
-      else if (act === 'reset') h.resetObjects();
-      else if (act === 'clear') h.clearBoard();
-      else if (act === 'voice') h.voice();
-      else if (act === 'voice-leave') h.voiceLeave();
-      else if (t.dataset.ink) {
-        h.setInk(t.dataset.ink);
-        this.el.querySelectorAll('.ink').forEach((b) => b.classList.toggle('on', b === t));
-      }
-    });
+    replaceChildren(this.el, h('div', { class: 'panel top' }, this.status, this.peersEl), this.bottom, this.toastEl);
   }
 
-  setStatus(room: string, conn: ConnState, rtt: number | null): void {
-    const label = conn === 'open' ? '接続中' : conn === 'connecting' ? '接続しています…' : '切断 (再接続待ち)';
-    this.status.innerHTML = `<span class="dot ${conn}"></span><b>${esc(room)}</b> · ${label}${
-      rtt !== null && conn === 'open' ? ` · ${Math.round(rtt)} ms` : ''
-    }`;
+  setStatus(roomTitle: string, conn: ConnState, rtt: number | null): void {
+    const label = conn === 'open' ? t('hud.connected') : conn === 'connecting' ? t('hud.connecting') : t('hud.disconnected');
+    replaceChildren(
+      this.status,
+      h('span', { class: `dot ${conn}` }),
+      h('b', {}, roomTitle),
+      ` · ${label}${rtt !== null && conn === 'open' ? ` · ${Math.round(rtt)} ms` : ''}`,
+    );
   }
 
-  /** link: 自分とその人の音声接続の状態 (接続していなければ null)。 */
+  /** `link`: state of my voice connection to that person (null when not connected). */
   setPeers(peers: PeerInfo[], selfId: string | null, link: (id: string) => LinkState | null = () => null): void {
     this.speakingKey = '';
-    this.peersEl.innerHTML = peers
-      .map((p) => {
+    replaceChildren(
+      this.peersEl,
+      ...peers.map((p) => {
         const mic = p.voice === 'on' ? ' 🎤' : p.voice === 'muted' ? ' 🔇' : '';
         const l = p.id === selfId ? null : link(p.id);
-        const linkLabel = l === 'connecting' ? ' · 音声接続中…' : l === 'failed' ? ' · 音声接続失敗' : '';
-        return `<li data-id="${esc(p.id)}"><span class="chip" style="--c:${p.color}"></span>${esc(p.name)}${
-          p.id === selfId ? ' (自分)' : ''
-        }${mic}<small>${p.device === 'desktop' ? 'PC' : p.device.toUpperCase()}${p.space ? ` · ${esc(p.space)}` : ''}${linkLabel}</small></li>`;
-      })
-      .join('');
+        const linkLabel = l === 'connecting' ? ` · ${t('voice.linkConnecting')}` : l === 'failed' ? ` · ${t('voice.linkFailed')}` : '';
+        const device = p.device === 'desktop' ? 'PC' : p.device.toUpperCase();
+        return h(
+          'li',
+          { 'data-id': p.id },
+          h('span', { class: 'chip', vars: { '--c': p.color } }),
+          p.name,
+          p.verified ? ' ✓' : '',
+          p.id === selfId ? ` ${t('hud.you')}` : '',
+          mic,
+          p.role === 'host' ? h('span', { class: 'badge' }, t('hud.host')) : null,
+          h('small', {}, `${device}${p.space ? ` · ${p.space}` : ''}${linkLabel}`),
+        );
+      }),
+    );
   }
 
-  /** 話している人を強調する。変化したときだけ DOM を触る。 */
+  /** Highlight people who are speaking (touches the DOM only on change). */
   setSpeaking(ids: ReadonlySet<string>): void {
     const key = [...ids].sort().join(',');
     if (key === this.speakingKey) return;
     this.speakingKey = key;
-    this.peersEl.querySelectorAll<HTMLElement>('li[data-id]').forEach((li) => {
-      li.classList.toggle('speaking', ids.has(li.dataset.id!));
-    });
+    for (const li of this.peersEl.querySelectorAll<HTMLElement>('li[data-id]')) li.classList.toggle('speaking', ids.has(li.dataset.id!));
+  }
+
+  setPermissions(p: PermissionView): void {
+    const apply = (b: HTMLButtonElement, allowed: boolean) => {
+      b.disabled = !allowed;
+      b.title = allowed ? '' : t('hud.hostOnly');
+    };
+    apply(this.resetBtn, p.resetObjects);
+    apply(this.clearBtn, p.clearBoard);
+    this.settingsBtn.hidden = !p.editSettings;
+    this.voiceWrap.hidden = !p.voice;
   }
 
   setVoice(v: VoiceView): void {
@@ -192,22 +151,22 @@ export class Hud {
     b.disabled = v.busy;
     b.classList.toggle('live', v.state === 'on');
     b.textContent = v.busy
-      ? 'マイクを確認中…'
+      ? t('voice.checking')
       : v.state === 'off'
-        ? '音声に参加'
+        ? t('voice.join')
         : v.state === 'on'
-          ? 'ミュート'
+          ? t('voice.mute')
           : v.listenOnly
-            ? 'マイクを使う'
-            : 'ミュート解除';
-    b.title = v.state === 'on' ? 'マイク ON (押すとミュート)' : '';
+            ? t('voice.useMic')
+            : t('voice.unmute');
+    b.title = v.state === 'on' ? t('voice.micOnTitle') : '';
     this.voiceLeaveBtn.hidden = v.state === 'off';
     this.voiceLeaveBtn.disabled = v.busy;
   }
 
-  /** XR 中は画面下の操作パネルを隠す (エミュレータで XR 画面に重ならないように)。 */
+  /** Hide the bottom controls while in XR (so they do not cover the emulator view). */
   setPresenting(presenting: boolean): void {
-    this.el.querySelector<HTMLElement>('.bottom')!.hidden = presenting;
+    this.bottom.hidden = presenting;
   }
 
   toast(text: string): void {

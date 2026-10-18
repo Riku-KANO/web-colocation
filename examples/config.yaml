@@ -1,0 +1,49 @@
+# Example configuration — try it with:  npm run dev:example
+# Every option is documented in docs/configuration.md (generated from the schema).
+# yaml-language-server: $schema=../schema/config.schema.json
+
+branding:
+  productName: { en: Acme XR Rooms, ja: Acme XR ルーム }
+  logo: /room-assets/logo.svg
+  accentColor: "#0a7cff"
+  lobbyMessage:
+    en: Pick a room. Put on your headset and press "Enter AR" to meet around the table.
+    ja: ルームを選んでください。ヘッドセットで「AR で入る」を押すと、机を囲んで集まれます。
+
+i18n:
+  defaultLanguage: en
+
+assets:
+  dir: examples/room-assets
+
+rooms:
+  allowAdhoc: true
+  adhocTemplate: standard
+  list:
+    - id: design-review
+      title: { en: Design review, ja: デザインレビュー }
+      template: product-demo
+    - id: kickoff
+      title: { en: Project kick-off, ja: キックオフ }
+      template: workshop
+      overrides:
+        rules: { permissions: { clearBoard: hosts } }
+    - id: town-hall
+      title: { en: Town hall, ja: 全体会議 }
+      template: presentation
+    - id: private
+      title: { en: Private room (passcode 1234), ja: 鍵付きルーム (パスコード 1234) }
+      template: round-table
+      # npm run hash-passcode -- 1234
+      passcodeHash: "scrypt$16384$8$1$DmVWD+gRYczLyY4sHocv1g==$sSz+O5esXxWsJbRv/REA+dXyMHnVrDOs6GEZZm7nnOw="
+
+templates:
+  - id: product-demo
+    extends: round-table
+    title: { en: Product demo, ja: 製品デモ }
+    environment: { background: "#1f2430", floor: plain, floorColor: "#2b3140" }
+    addObjects:
+      - id: drone
+        kind: model
+        position: [0, 0.02, 0.4]
+        model: { src: /room-assets/drone.glb, scale: 1.2 }

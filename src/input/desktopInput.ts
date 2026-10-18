@@ -69,8 +69,11 @@ export class DesktopInput {
     const { sharedRoot, camera } = this.deps;
     sharedRoot.updateMatrixWorld(true);
     const [fx, fz] = seatForward(seat.yaw);
+    // Table rooms: look down at the table. Floor rooms (e.g. presentations): look ahead at eye level.
+    const ahead = anchor.kind === 'table' ? 1.3 : 2.5;
+    const targetY = (anchor.kind === 'table' ? 0.85 : 1.3) - anchor.floorOffset;
     const eye = sharedRoot.localToWorld(new Vector3(seat.x - fx * 0.55, 1.45 - anchor.floorOffset, seat.z - fz * 0.55));
-    const target = sharedRoot.localToWorld(new Vector3(seat.x + fx * 1.3, 0.85 - anchor.floorOffset, seat.z + fz * 1.3));
+    const target = sharedRoot.localToWorld(new Vector3(seat.x + fx * ahead, targetY, seat.z + fz * ahead));
     camera.position.copy(eye);
     this.controls.target.copy(target);
     camera.lookAt(target);

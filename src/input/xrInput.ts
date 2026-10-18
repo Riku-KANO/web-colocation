@@ -5,6 +5,7 @@
 //   手首パネル: 左手側に表示、右手のレイで押す
 
 import {
+  BoxGeometry,
   BufferGeometry,
   Float32BufferAttribute,
   Line,
@@ -63,6 +64,8 @@ class HandState {
   readonly hand: XRHandSpace;
   readonly ray: Line;
   readonly tipMarker: Mesh;
+  readonly fallbackModel = new Mesh(new BoxGeometry(0.035, 0.035, 0.11), new MeshBasicMaterial({ color: '#3a3f4a' }));
+  controllerModel: Object3D | null = null;
   source: XRInputSource | null = null;
   hold: Hold | null = null;
   rayStroke: StrokeHandle | null = null;
@@ -108,6 +111,8 @@ export interface XRInputDeps {
   strokes: StrokeWriter;
   panel: XRPanel;
   inkColor(): string;
+  /** Base URL of WebXR input profiles; null = jsDelivr; "none" = built-in shapes only. */
+  inputProfilesPath?: string | null;
   isCalibrating(): boolean;
   onCalibrationPoint(pWorld: Vector3): void;
   onPanelButton(id: string): void;
@@ -129,8 +134,16 @@ export class XRInput {
   constructor(deps: XRInputDeps) {
     this.deps = deps;
     const { renderer, scene } = deps;
-    const controllerModels = new XRControllerModelFactory();
+    // Controller / hand models come from the WebXR input profiles (jsDelivr by default). Closed
+    // networks can self-host them (inputProfilesPath) or use "none" for built-in shapes only.
+    const path = deps.inputProfilesPath?.replace(/\/$/, '') ?? null;
+    const offline = path === 'none';
+    const controllerModels = offline ? null : new XRControllerModelFactory();
     const handModels = new XRHandModelFactory();
+    if (path && !offline) {
+      controllerModels!.setPath(path);
+      handModels.setPath(`${path}/generic-hand/`);
+    }
 
     for (let i = 0; i < 2; i++) {
       const controller = renderer.xr.getController(i);
@@ -139,8 +152,14 @@ export class XRInput {
       const h = new HandState(i, controller, grip, hand);
       this.hands.push(h);
 
-      grip.add(controllerModels.createControllerModel(grip));
-      hand.add(handModels.createHandModel(hand, 'mesh'));
+      // Simple stand-in shown until (or instead of) the real controller model.
+      h.fallbackModel.position.set(0, -0.01, 0.03);
+      grip.add(h.fallbackModel);
+      if (controllerModels) {
+        h.controllerModel = controllerModels.createControllerModel(grip);
+        grip.add(h.controllerModel);
+      }
+      hand.add(handModels.createHandModel(hand, offline ? 'spheres' : 'mesh'));
       scene.add(controller, grip, hand, h.tipMarker);
 
       controller.addEventListener('connected', (e) => {
@@ -212,6 +231,7 @@ export class XRInput {
         h.tipMarker.visible = false;
         continue;
       }
+      h.fallbackModel.visible = !h.isHand && !(h.controllerModel && h.controllerModel.children.length > 0);
       if (h.hold && !objects.isLocallyHeld(h.hold.id)) this.endHold(h, false);
 
       // 掴んでいる物を手に追従させる

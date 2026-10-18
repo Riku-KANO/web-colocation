@@ -167,6 +167,7 @@ export class RoomRegistry {
       allowAdhoc: c.rooms.allowAdhoc,
       voiceEnabled: c.voice.enabled,
       xr: { inputProfilesPath: c.xr.inputProfilesPath ?? null },
+      models: { allowedOrigins: c.assets.allowedOrigins, maxBytes: c.assets.maxModelBytes },
       allowServerOverride: c.server.allowServerOverride,
     };
   }
