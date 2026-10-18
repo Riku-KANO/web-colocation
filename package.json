@@ -33,7 +33,8 @@
     "make:sample-model": "node scripts/make-sample-model.ts",
     "gen:docs": "node scripts/gen-config-docs.ts",
     "gen": "node scripts/gen-schema.ts && node scripts/gen-config-docs.ts",
-    "test:e2e": "npm run build && playwright test"
+    "test:e2e": "npm run build && playwright test",
+    "loadtest": "node scripts/loadtest.ts"
   },
   "engines": {
     "node": ">=23.6"

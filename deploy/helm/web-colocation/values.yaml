@@ -16,11 +16,13 @@ fullnameOverride: ""
 # -- Application configuration (rendered to /config/config.yaml).
 # Schema: schema/config.schema.json in the repository (also enforced by values.schema.json).
 # The chart fills in storage, assets and auth settings that depend on the deployment below.
-config:
-  branding:
-    productName: WebXR Colocation
-  rooms:
-    allowAdhoc: true
+config: {}
+#  branding:
+#    productName: { en: Acme XR Rooms, ja: Acme XR ルーム }
+#  rooms:
+#    list:
+#      - id: design-review
+#        template: workshop
 
 # -- Use an existing ConfigMap (key config.yaml) instead of `config`.
 existingConfigMap: ""

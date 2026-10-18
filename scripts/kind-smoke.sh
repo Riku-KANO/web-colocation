@@ -93,6 +93,36 @@ k -n "$NS" run sso-check --image="$IMAGE" --image-pull-policy=Never --restart=Ne
 k -n "$NS" wait pod/sso-check --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s >/dev/null || { k -n "$NS" logs sso-check; exit 1; }
 k -n "$NS" logs sso-check
 
+step "browser E2E on the cluster (example config, assets from a ConfigMap, enforced CSP)"
+k -n "$NS" create configmap colo-assets --from-file="$ROOT/examples/room-assets" --dry-run=client -o yaml | k apply -f - >/dev/null
+hl upgrade --install colo-e2e "$CHART" -n "$NS" -f "$ROOT/test/e2e/kind/values-e2e.yaml" \
+  --set image.repository=web-colocation --set image.tag=dev --set image.pullPolicy=Never \
+  --set config.server.csp=enforce --set persistence.size=100Mi \
+  --set-string podAnnotations.image-id="$IMAGE_ID" --wait --timeout 180s >/dev/null
+kubectl --kubeconfig "$KCFG" -n "$NS" port-forward svc/colo-e2e-web-colocation 18090:80 >/dev/null 2>&1 &
+PF=$!
+for _ in $(seq 1 30); do curl -sf localhost:18090/healthz >/dev/null && break; sleep 0.5; done
+curl -sf -o /dev/null localhost:18090/room-assets/drone.glb && echo "ok  assets from ConfigMap"
+if [[ -z "${SKIP_BROWSER:-}" ]]; then
+  (cd "$ROOT" && E2E_BASE_URL=http://127.0.0.1:18090 npx playwright test --reporter=line)
+fi
+kill $PF 2>/dev/null || true
+
+step "room state survives a pod restart"
+forward() {
+  kubectl --kubeconfig "$KCFG" -n "$NS" port-forward svc/colo-web-colocation 18080:80 >/dev/null 2>&1 &
+  PF=$!
+  for _ in $(seq 1 40); do curl -sf localhost:18080/readyz >/dev/null && return; sleep 0.5; done
+}
+forward
+node "$ROOT/test/e2e/restore-check.mjs" write ws://127.0.0.1:18080/ws
+kill $PF 2>/dev/null || true
+k -n "$NS" rollout restart deploy/colo-web-colocation >/dev/null
+k -n "$NS" rollout status deploy/colo-web-colocation --timeout 120s >/dev/null
+forward
+node "$ROOT/test/e2e/restore-check.mjs" verify ws://127.0.0.1:18080/ws
+kill $PF 2>/dev/null || true
+
 if [[ -n "${CLEANUP:-}" ]]; then
   step "cleanup"
   k delete namespace "$NS" --wait=false

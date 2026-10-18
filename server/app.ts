@@ -2,6 +2,7 @@
 // Used by the production entry point (main.ts), the Vite dev plugin and integration tests.
 
 import type { EventEmitter } from 'node:events';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { attachColocationServer, type ColocationServer } from './colocationServer.ts';
 import type { LoadedConfig } from './config/load.ts';
 import { createHealthHandler, createHttpHandler, type Handler } from './http/handler.ts';
@@ -66,6 +67,7 @@ export function createServerApp(opts: ServerAppOptions): ServerApp {
     async shutdown() {
       app.ready = false;
       clearInterval(sweep);
+      loopDelay.disable();
       for (const s of sockets) s.drain();
       await registry.flush();
       registry.close();
@@ -76,6 +78,21 @@ export function createServerApp(opts: ServerAppOptions): ServerApp {
   void registry.sweep();
   const sweep = setInterval(() => void registry.sweep(), 3600_000);
   sweep.unref();
+  // Process health for capacity planning.
+  const LOOP_SAMPLE_MS = 20;
+  const loopDelay = monitorEventLoopDelay({ resolution: LOOP_SAMPLE_MS });
+  loopDelay.enable();
+  metrics.gauge('process_cpu_seconds_total', 'User + system CPU time of the process', () => {
+    const u = process.cpuUsage();
+    return (u.user + u.system) / 1e6;
+  });
+  metrics.gauge('process_resident_memory_bytes', 'Resident memory', () => process.memoryUsage().rss);
+  metrics.gauge('colo_event_loop_lag_p99_ms', 'Event loop lag (beyond the sampling interval), 99th percentile since the last scrape', () => {
+    // The histogram records whole sampling intervals; subtract the interval to get the lag.
+    const v = Math.max(0, loopDelay.percentile(99) / 1e6 - LOOP_SAMPLE_MS);
+    loopDelay.reset();
+    return Math.round(v * 100) / 100;
+  });
   metrics.gauge('colo_ws_open_connections', 'Open WebSocket connections', () => sockets.reduce((n, s) => n + s.connections, 0));
   return app;
 }

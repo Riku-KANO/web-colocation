@@ -17,7 +17,10 @@ All notable changes are documented here. The format follows
 - SSO via trusted proxy headers (oauth2-proxy), per-room allow lists, admins.
 - TURN REST credentials issued after joining and refreshed before expiry.
 - File persistence of room state; graceful shutdown with state restore.
-- Health/readiness on a separate port, Prometheus metrics, JSON logs, Content-Security-Policy.
+- Health/readiness on a separate port, Prometheus metrics (incl. CPU, memory, event-loop lag),
+  JSON logs, Content-Security-Policy.
+- `scripts/loadtest.ts` and measured capacity (800 participants on one process, see
+  docs/operations.md); browser E2E tests (Playwright + WebXR emulator); kind end-to-end script.
 - Container image, Helm chart (Ingress, Gateway API, GKE BackendConfig, oauth2-proxy native
   sidecar, NetworkPolicy), docker compose quick start with TURN and SSO demos.
 - Protocol v3: room config in `welcome`, `config` reconfiguration with epochs, `ice`, error codes.
