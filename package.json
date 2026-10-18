@@ -34,7 +34,8 @@
     "gen:docs": "node scripts/gen-config-docs.ts",
     "gen": "node scripts/gen-schema.ts && node scripts/gen-config-docs.ts",
     "test:e2e": "npm run build && playwright test",
-    "loadtest": "node scripts/loadtest.ts"
+    "loadtest": "node scripts/loadtest.ts",
+    "screenshots": "npm run build && node scripts/screenshots.ts"
   },
   "engines": {
     "node": ">=23.6"
