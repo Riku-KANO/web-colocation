@@ -9,11 +9,13 @@
       "type": "object",
       "properties": {
         "publicUrl": {
+          "description": "Public URL (e.g. https://xr.example.com). Its origin is always allowed for WebSockets.",
           "type": "string",
           "format": "uri"
         },
         "allowedOrigins": {
           "default": [],
+          "description": "Extra allowed Origins for WebSocket connections. Same-host origins are always allowed.",
           "type": "array",
           "items": {
             "type": "string",
@@ -22,20 +24,24 @@
         },
         "maxRooms": {
           "default": 500,
+          "description": "Maximum number of rooms held in memory.",
           "type": "integer",
           "minimum": 1,
           "maximum": 100000
         },
         "trustForwardedFor": {
           "default": false,
+          "description": "Trust X-Forwarded-For for rate limiting (only behind a proxy that overwrites it).",
           "type": "boolean"
         },
         "allowServerOverride": {
           "default": false,
+          "description": "Allow the `?server=` URL parameter to point the client at another sync server.",
           "type": "boolean"
         },
         "csp": {
           "default": "report-only",
+          "description": "Content-Security-Policy for the app page. Start with report-only, then enforce.",
           "type": "string",
           "enum": [
             "off",
@@ -52,6 +58,7 @@
       "properties": {
         "mode": {
           "default": "none",
+          "description": "none: anyone who can reach the app may join (rooms can still have passcodes). trusted-headers: identity comes from an authenticating proxy such as oauth2-proxy.",
           "type": "string",
           "enum": [
             "none",
@@ -60,6 +67,7 @@
         },
         "preset": {
           "default": "oauth2-proxy",
+          "description": "Which identity headers to read. custom uses auth.headers.",
           "type": "string",
           "enum": [
             "oauth2-proxy",
@@ -91,10 +99,12 @@
         },
         "allowDisplayNameOverride": {
           "default": false,
+          "description": "Let SSO users change the display name shown to others.",
           "type": "boolean"
         },
         "admins": {
           "default": [],
+          "description": "Emails that are hosts in every room.",
           "type": "array",
           "items": {
             "type": "string",
@@ -103,6 +113,7 @@
         },
         "allowNonLoopback": {
           "default": false,
+          "description": "Allow trusted-headers mode while listening on a non-loopback address (unsafe).",
           "type": "boolean"
         }
       },
@@ -114,6 +125,7 @@
       "properties": {
         "productName": {
           "default": "WebXR Colocation",
+          "description": "Name shown in the lobby. A string or { en: ..., ja: ... }.",
           "anyOf": [
             {
               "type": "string",
@@ -133,15 +145,18 @@
           ]
         },
         "logo": {
+          "description": "Logo URL, e.g. /room-assets/logo.svg or an https URL.",
           "type": "string",
           "maxLength": 500
         },
         "accentColor": {
           "default": "#2f80ed",
+          "description": "Accent colour of buttons and highlights.",
           "type": "string",
           "pattern": "^#[0-9a-fA-F]{6}$"
         },
         "lobbyMessage": {
+          "description": "Text under the product name in the lobby.",
           "anyOf": [
             {
               "type": "string",
@@ -169,6 +184,7 @@
       "properties": {
         "defaultLanguage": {
           "default": "en",
+          "description": "UI language when the browser language is not supported.",
           "type": "string",
           "enum": [
             "en",
@@ -183,6 +199,7 @@
       "type": "object",
       "properties": {
         "inputProfilesPath": {
+          "description": "Base URL of the WebXR input profiles (controller / hand models). Defaults to jsDelivr.",
           "type": "string",
           "maxLength": 500
         }
@@ -195,6 +212,7 @@
       "properties": {
         "enabled": {
           "default": true,
+          "description": "Offer voice chat (WebRTC, peer to peer).",
           "type": "boolean"
         },
         "iceServers": {
@@ -203,6 +221,7 @@
               "urls": "stun:stun.l.google.com:19302"
             }
           ],
+          "description": "STUN/TURN servers with static credentials.",
           "maxItems": 10,
           "type": "array",
           "items": {
@@ -250,15 +269,18 @@
               "items": {
                 "type": "string",
                 "maxLength": 500
-              }
+              },
+              "description": "TURN URLs, e.g. turn:turn.example.com:3478?transport=udp."
             },
             "secretEnv": {
               "default": "TURN_SECRET",
+              "description": "Environment variable holding the TURN REST shared secret (coturn static-auth-secret).",
               "type": "string",
               "maxLength": 100
             },
             "ttlSeconds": {
               "default": 3600,
+              "description": "Lifetime of issued TURN credentials (refreshed automatically).",
               "type": "integer",
               "minimum": 60,
               "maximum": 86400
@@ -278,6 +300,7 @@
       "properties": {
         "driver": {
           "default": "memory",
+          "description": "memory: state is lost on restart. file: one JSON file per room under storage.dir.",
           "type": "string",
           "enum": [
             "memory",
@@ -286,6 +309,7 @@
         },
         "dir": {
           "default": "/data",
+          "description": "Directory for the file driver (a persistent volume).",
           "type": "string",
           "maxLength": 500
         }
@@ -297,11 +321,13 @@
       "type": "object",
       "properties": {
         "dir": {
+          "description": "Directory served at /room-assets/ (logos, GLB models...).",
           "type": "string",
           "maxLength": 500
         },
         "allowedOrigins": {
           "default": [],
+          "description": "https origins models may be loaded from.",
           "type": "array",
           "items": {
             "type": "string",
@@ -310,6 +336,7 @@
         },
         "maxModelBytes": {
           "default": 26214400,
+          "description": "Largest glTF/GLB model (bytes) served and downloaded.",
           "type": "integer",
           "minimum": 1024,
           "maximum": 536870912
@@ -323,21 +350,25 @@
       "properties": {
         "allowAdhoc": {
           "default": true,
+          "description": "Allow joining any room name (created on demand from adhocTemplate).",
           "type": "boolean"
         },
         "adhocTemplate": {
           "default": "standard",
+          "description": "Template for rooms created on demand.",
           "type": "string",
           "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
         },
         "adhocTtlHours": {
           "default": 168,
+          "description": "Delete stored state of ad-hoc rooms unused for this long.",
           "type": "integer",
           "minimum": 1,
           "maximum": 8760
         },
         "list": {
           "default": [],
+          "description": "Predefined rooms shown in the lobby.",
           "maxItems": 1000,
           "type": "array",
           "items": {
@@ -345,9 +376,11 @@
             "properties": {
               "id": {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$",
+                "description": "Room id used in URLs (?room=...)."
               },
               "title": {
+                "description": "Room title. A string or { en: ..., ja: ... }.",
                 "anyOf": [
                   {
                     "type": "string",
@@ -368,6 +401,7 @@
               },
               "template": {
                 "default": "standard",
+                "description": "Template id (built-in: standard, round-table, workshop, presentation).",
                 "type": "string",
                 "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
               },
@@ -457,6 +491,7 @@
               },
               "hosts": {
                 "default": [],
+                "description": "Emails of people who are hosts of this room (requires trusted-headers auth).",
                 "maxItems": 256,
                 "type": "array",
                 "items": {
@@ -495,11 +530,13 @@
                 "additionalProperties": false
               },
               "passcodeHash": {
+                "description": "Hash from `npm run hash-passcode`. Overrides passcodes set by hosts in the app.",
                 "type": "string",
                 "pattern": "^scrypt\\$\\d+\\$\\d+\\$\\d+\\$[A-Za-z0-9+/=]+\\$[A-Za-z0-9+/=]+$"
               },
               "unlisted": {
                 "default": false,
+                "description": "Hide the room from the lobby list (people can still join by id).",
                 "type": "boolean"
               }
             },
@@ -514,6 +551,7 @@
     },
     "templates": {
       "default": [],
+      "description": "Custom room templates (in addition to the built-in ones).",
       "maxItems": 200,
       "type": "array",
       "items": {
@@ -524,6 +562,7 @@
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
           },
           "extends": {
+            "description": "Inherit everything from another template, then override the fields given here.",
             "type": "string",
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
           },
@@ -559,6 +598,7 @@
               },
               "floorOffset": {
                 "default": 0.72,
+                "description": "Height of the shared origin above the floor. Use the main table height for 'table'.",
                 "type": "number",
                 "minimum": 0,
                 "maximum": 3
@@ -682,6 +722,7 @@
                       "maximum": 50
                     },
                     "yaw": {
+                      "description": "Facing direction in degrees (0 = looking towards -Z). Defaults to facing `lookAt` or the origin.",
                       "type": "number",
                       "minimum": -360,
                       "maximum": 360
@@ -730,6 +771,7 @@
                       },
                       "startAngle": {
                         "default": 0,
+                        "description": "Angle of seat 0 in degrees, measured from +Z towards +X.",
                         "type": "number",
                         "minimum": -360,
                         "maximum": 360
@@ -776,6 +818,7 @@
                 },
                 "yaw": {
                   "default": 0,
+                  "description": "Degrees; 0 means the drawing surface faces +Z.",
                   "type": "number",
                   "minimum": -360,
                   "maximum": 360
@@ -808,6 +851,7 @@
             }
           },
           "objects": {
+            "description": "Replaces the inherited objects.",
             "maxItems": 128,
             "type": "array",
             "items": {
@@ -862,6 +906,7 @@
                     0,
                     0
                   ],
+                  "description": "Euler angles in degrees (XYZ order).",
                   "type": "array",
                   "prefixItems": [
                     {
@@ -923,6 +968,7 @@
             }
           },
           "addObjects": {
+            "description": "Appended to the inherited objects.",
             "maxItems": 128,
             "type": "array",
             "items": {
@@ -977,6 +1023,7 @@
                     0,
                     0
                   ],
+                  "description": "Euler angles in degrees (XYZ order).",
                   "type": "array",
                   "prefixItems": [
                     {

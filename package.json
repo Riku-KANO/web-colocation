@@ -1,9 +1,25 @@
 {
   "name": "web-colocation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "WebXR multi-user colocation prototype (shared objects, pen, whiteboard)",
+  "description": "Self-hostable WebXR meeting rooms: shared objects, pens, whiteboards and spatial voice for headsets and browsers",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/web-colocation.git"
+  },
+  "keywords": [
+    "webxr",
+    "mixed-reality",
+    "colocation",
+    "meeting",
+    "whiteboard",
+    "three.js",
+    "quest",
+    "android-xr",
+    "kubernetes"
+  ],
   "scripts": {
     "dev": "vite",
     "dev:https": "HTTPS=1 vite",
@@ -14,7 +30,10 @@
     "test": "vitest run",
     "gen:schema": "node scripts/gen-schema.ts",
     "hash-passcode": "node scripts/hash-passcode.ts",
-    "make:sample-model": "node scripts/make-sample-model.ts"
+    "make:sample-model": "node scripts/make-sample-model.ts",
+    "gen:docs": "node scripts/gen-config-docs.ts",
+    "gen": "node scripts/gen-schema.ts && node scripts/gen-config-docs.ts",
+    "test:e2e": "npm run build && playwright test"
   },
   "engines": {
     "node": ">=23.6"
@@ -25,6 +44,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "26.6.4",
     "@types/three": "0.186.0",
     "@types/ws": "8.18.2",

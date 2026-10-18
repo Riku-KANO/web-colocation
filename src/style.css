@@ -33,14 +33,16 @@ body {
 #lobby {
   position: fixed;
   inset: 0;
-  display: grid;
-  place-items: center;
+  /* flex + margin:auto centres the card but keeps it scrollable when it is taller than the screen */
+  display: flex;
+  overflow-y: auto;
   padding: 16px;
   background: rgba(10, 14, 20, 0.45);
   z-index: 10;
 }
 
 #lobby .card {
+  margin: auto;
   width: min(420px, 100%);
   display: grid;
   gap: 12px;

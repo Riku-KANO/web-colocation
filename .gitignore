@@ -9,3 +9,5 @@ data/
 # Local tooling (Claude Code launch configs etc.)
 .claude/
 .kind-kubeconfig
+test-results/
+playwright-report/

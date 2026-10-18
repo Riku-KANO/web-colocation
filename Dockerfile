@@ -29,7 +29,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/shared ./shared
 COPY --from=build /app/server ./server
-COPY LICENSE NOTICE ./
+COPY --from=build /app/scripts/hash-passcode.ts ./scripts/hash-passcode.ts
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 # The state volume must be writable by the app user (named Docker volumes copy this ownership).
 RUN mkdir -p /data && chown 1000:1000 /data
 # Numeric user so Kubernetes can verify runAsNonRoot.

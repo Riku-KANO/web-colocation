@@ -1,0 +1,42 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Join room ... from ...
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.2.0 (image tag or commit)"
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device / browser
+      multiple: true
+      options: [Meta Quest Browser, Chrome on Android XR, Safari on Vision Pro, Desktop Chrome/Edge, Desktop Firefox, Desktop Safari, Mobile browser, WebXR emulator, Other]
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options: [npm run dev, docker compose, Helm on EKS, Helm on GKE, Helm (other Kubernetes), Other]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / console output
+      description: Server logs and the browser console. Remove anything confidential.
+      render: text

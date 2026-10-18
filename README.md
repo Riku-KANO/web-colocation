@@ -1,177 +1,111 @@
-# WebXR Colocation
+# web-colocation
 
-WebXR で、離れた場所 (または同じ部屋) にいる複数人が **同じ机・物・ペン・ホワイトボードを共有する** プロトタイプです。
-誰かが物を動かすと、他の全員からもその物が動いて見えます。MR 会議アプリの土台として作っています。
+**WebXR meeting rooms you can run on your own infrastructure.** People join from Meta Quest,
+Android XR, Apple Vision Pro or an ordinary browser, sit around a shared table, move objects,
+write on whiteboards with pens, and talk with spatial voice. Everyone in the same physical room
+can align their headsets so virtual objects sit on the real table.
 
-- [実現可能性の検討](docs/feasibility.md): 各プラットフォームの対応状況と、採用した方針
-- [設計](docs/architecture.md): 共有座標系、同期モデル、プロトコル、ロードマップ
+[日本語の README はこちら](README.ja.md)
 
-## できること
+- **Shared space** — objects, pens and whiteboards stay in sync; first grab wins, others see it move.
+- **Colocation** — remote people place the room on their own desk; people in the same room
+  calibrate with two touches so everyone's virtual table matches the real one.
+- **Customizable rooms** — tables, seats, boards, your own glTF models, environment and rules,
+  defined in YAML templates or changed by hosts in the app.
+- **Company ready** — SSO through oauth2-proxy (Google Workspace, Entra ID, Okta, any OIDC),
+  host/member roles, allow lists, passcodes, TURN with short-lived credentials, persistence.
+- **Easy to install** — one container, one Helm chart, examples for EKS (ALB), GKE and
+  Gateway API; config changes apply live.
 
-- 共有オブジェクト (立方体・球・円錐・トーラス・ペン 2 本) を掴んで動かす。同時に掴んだ場合は先着が優先される
-- ペンを持ち、ペン先をホワイトボードに当てて書く。レイやマウスでも書ける
-- 参加者のアバター (頭・両手・名札) が表示され、席は自動で割り当てられる
-- 音声通話 (WebRTC P2P)。相手の声はアバターの頭の位置から聞こえ (空間音声)、話している人の名札が光る
-- 座標合わせ
-  - 別々の部屋: 自分の机の中心を 1 点タッチする
-  - 同じ部屋: 全員が同じ物理的な 2 点を同じ順にタッチする
-- 参加できる端末: Quest / Android XR (AR・VR)、Vision Pro (VR)、PC・スマホ (画面のみ)
-- 途中参加と自動再接続 (サーバーのスナップショットから復帰)
+> Status: v0.2 (pre-release). Tested with the WebXR emulator and kind; please report results
+> from real headsets and clouds.
 
-## すぐ試す (PC だけで)
+## Try it locally
 
 ```bash
 npm install
-```
-
-```bash
 npm run dev
 ```
 
-ブラウザで 2 つのタブを開き、同じルームに入ります。
+Open http://localhost:5173 in two browser tabs, enter the same room and drag things around.
+Add `&emulate=quest3` to the URL to try the XR mode without a headset.
 
-- http://localhost:5173/?room=demo&name=Alice&autojoin=1
-- http://localhost:5173/?room=demo&name=Bob&autojoin=1
+With Docker:
 
-片方のタブで机の上の物をドラッグすると、もう片方のタブでも動きます。
-音声通話の試し方は [音声通話](#音声通話) を見てください。
+```bash
+docker compose up --build        # http://localhost:8080 with sample rooms and a 3D model
+```
 
-| PC の操作 | |
+SSO demo (dex + oauth2-proxy, user `alice@example.com` / `password`):
+
+```bash
+docker compose -f compose.yaml -f deploy/compose/sso.compose.yaml up --build   # http://localhost:4180
+```
+
+## Install on Kubernetes
+
+```bash
+helm install colo oci://ghcr.io/OWNER/charts/web-colocation \
+  -n xr --create-namespace -f my-values.yaml
+```
+
+Start from an example in [`deploy/examples/`](deploy/examples): `eks-alb.yaml`,
+`gke-ingress.yaml`, `gateway-api.yaml`, `oauth2-proxy-google.yaml`, `oauth2-proxy-entra.yaml`.
+Headsets require **HTTPS**. See [docs/deploy-kubernetes.md](docs/deploy-kubernetes.md).
+
+```yaml
+# my-values.yaml (excerpt)
+config:
+  branding: { productName: Acme XR Rooms, logo: /room-assets/logo.svg }
+  rooms:
+    list:
+      - id: design-review
+        title: { en: Design review, ja: デザインレビュー }
+        template: workshop
+        hosts: [lead@acme.example]
+oauth2Proxy: { enabled: true, provider: google, clientId: ..., existingSecret: colo-oauth2 }
+ingress: { enabled: true, className: alb, hosts: [{ host: xr.acme.example, paths: [{ path: /, pathType: Prefix }] }] }
+```
+
+## Use it in a headset
+
+1. Open the site (HTTPS) in the headset browser, pick a room and press **Enter AR** (or VR).
+2. The room appears in front of you. Use the wrist panel (left hand) to
+   - **Place here (1 pt)** — touch the centre of your real table to put the room on it, or
+   - **Same room (2 pts)** — everyone in the same physical room touches the same two points
+     (e.g. the middle of both short edges of a table) in the same order.
+3. Grab objects with the trigger / pinch. Hold a pen and touch a board to write.
+
+On a PC: drag objects, Shift+drag to lift, mouse wheel while dragging to rotate, drag on a board to draw.
+
+## Documentation
+
+| | |
 |---|---|
-| 物をドラッグ | 水平に移動 |
-| Shift + ドラッグ | 上下に移動 |
-| ドラッグ中にホイール、または Q / E | 回転 |
-| ボード上でドラッグ | 描く (色は画面下で選ぶ) |
-| それ以外のドラッグ / ホイール | 視点の回転 / ズーム |
+| [Getting started](docs/getting-started.md) | local development, headsets over HTTPS, emulator |
+| [Configuration](docs/configuration.md) · [reference](docs/configuration-reference.md) | the config file and every option |
+| [Room templates](docs/room-templates.md) | layouts, furniture, boards, custom 3D models, rules |
+| [Deploy on Kubernetes](docs/deploy-kubernetes.md) | Helm chart, EKS / GKE / Gateway API, TLS |
+| [Authentication](docs/auth.md) | SSO with oauth2-proxy, hosts, allow lists, passcodes |
+| [Voice and TURN](docs/turn.md) | when you need TURN and how to run it |
+| [Operations](docs/operations.md) | health, metrics, logs, backups, upgrades, capacity |
+| [Architecture](docs/architecture.md) · [Protocol](docs/protocol.md) | how it works, for contributors and native clients |
+| [Troubleshooting](docs/troubleshooting.md) · [Roadmap](docs/roadmap.md) | |
 
-### ヘッドセット無しで XR モードを試す
+## Platform support
 
-URL に `&emulate=quest3` を付けると、Meta の WebXR エミュレータ (IWER) が入ります。その状態で「AR で入る」を押してください。
-コントローラーは `window.__xrDevice` からスクリプトで操作できます。
+| | AR (passthrough) | VR | Hands | Anchors |
+|---|---|---|---|---|
+| Meta Quest Browser | ✓ | ✓ | ✓ | ✓ |
+| Chrome on Android XR | ✓ | ✓ | ✓ | ✓ |
+| Safari on Apple Vision Pro | – | ✓ | gaze + pinch | – |
+| Desktop / mobile browsers | – | – | mouse / touch | – |
 
-```js
-const r = __xrDevice.controllers.right;
-r.position.set(0.3, 0.8, -1.1);
-r.updateButtonValue('trigger', 1); // 掴む / 押す
-```
+## Contributing
 
-## ヘッドセットで試す (Quest / Android XR)
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Security issues: please follow [SECURITY.md](SECURITY.md).
 
-WebXR は HTTPS (または localhost) でしか動きません。次のどちらかの方法を使います。
+## License
 
-**A. LAN 内で HTTPS (自己署名証明書)**
-
-```bash
-npm run dev:https
-```
-
-表示される `https://<PCのIP>:5173` をヘッドセットのブラウザで開き、証明書の警告を承認してください。
-
-**B. USB 接続で localhost として開く**
-
-```bash
-adb reverse tcp:5173 tcp:5173
-```
-
-この方法では `npm run dev` のまま、ヘッドセットで `http://localhost:5173` を開きます。
-
-Android XR の Chrome では、初回に「3D マッピング / カメラトラッキング」の許可を求められます。
-デバッグは PC の Chrome の `chrome://inspect/#devices` から行えます。
-
-### XR 内の操作
-
-| 操作 | 内容 |
-|---|---|
-| トリガー / グリップ / ピンチ | 近くの物を掴む。届かない物はレイで掴む |
-| ペンを掴む | レイの先にペンが付く。ペン先をボードに当てると書ける |
-| 何も持たずにボードへレイ + トリガー | レイで書く |
-| 左手首のパネル (右手のレイで押す) | 「ここに机 (1点)」「同室合わせ (2点)」「正面に置く」「物を戻す」「ボード消去」「音声に参加 / ミュート」など |
-
-### 座標合わせのしかた
-
-- **別々の部屋から参加する場合**: パネルの「ここに机 (1点)」を押し、自分の机の中心にコントローラーの先端 (ハンドなら人差し指の先) を当ててトリガーを引きます。机が無ければ空中でもかまいません。
-- **同じ部屋にいる場合**
-  1. ロビーで全員が同じ「同室 ID」を入力します (例 `office-3F`)。
-  2. パネルの「同室合わせ (2点)」を押します。
-  3. 全員が同じ 2 点 (例: テーブルの左右の短辺の中点) を **同じ順番で** タッチします。
-  4. 2 点は 1 m 以上離すと精度が上がります。
-
-合わせた後は、相手のアバター (名札) が実物の頭の上に来ます。
-
-## 音声通話
-
-画面下の「音声に参加」(XR 中は手首パネルの「音声に参加」) を押すと、マイクの許可を求められます。許可すると、同じルームで音声に参加している人と WebRTC で直接つながります。
-
-- 相手の声は、その人のアバターの頭の位置から聞こえます (three.js の `PositionalAudio`、HRTF)。顔の正面のほうが少し大きく聞こえます。
-- 話している人は、名札の縁と頭が光ります。画面左上の参加者一覧でも緑色になります。🎤 はマイク ON、🔇 はミュート中です。
-- 参加後のボタンは「ミュート / ミュート解除」と「音声を切る」です。
-- マイクを許可しなかった場合や、マイクが無い場合は「聞くだけ」で参加します。後から「マイクを使う」を押すと、もう一度許可を求めます。
-- 同じ同室 ID で AR 参加している相手の声は、スピーカーからは鳴らしません。肉声が聞こえているので、二重に聞こえるのを避けるためです。名札は光ります。
-- 通信が切れて再接続したときは、参加状態を保ったまま自動でつなぎ直します。ページを再読み込みしたときは、もう一度「音声に参加」を押してください。
-
-### 2 タブで確かめる手順 (PC)
-
-1. `npm run dev` を起動します。
-2. 次の 2 つのタブを開きます。
-   - http://localhost:5173/?room=demo&name=Alice&autojoin=1
-   - http://localhost:5173/?room=demo&name=Bob&autojoin=1
-3. 両方のタブで「音声に参加」を押し、マイクを許可します。
-4. 参加者一覧の相手の名前の横に 🎤 が出て、「音声接続中…」の表示が消えればつながっています。
-5. **ヘッドホンを使ってください。** 同じ PC の 2 タブは同じマイクを使うので、スピーカーで鳴らすとハウリングします。ヘッドホンが無い場合は、片方のタブを「ミュート」にします。
-6. マイクに向かって話すと、もう片方のタブから少し遅れて自分の声が聞こえます。そのタブで相手の名札が光ります。
-7. 視点をドラッグで回し、相手のアバターを画面の左右に動かします。声の聞こえる向きが変わります。
-8. 次の動作も確かめられます。
-   - 「ミュート」を押すと、相手側で声が止まり、🔇 になる。
-   - 「音声を切る」を押すと、相手側の 🎤 が消え、接続も切れる。
-   - 3 つ目のタブで途中から参加すると、2 人の両方とつながる。
-   - タブを閉じると、残った人の接続が片付く。
-
-マイクが無い環境では、URL に `&fakemic=1` を付けてください。マイクの代わりに、2 秒周期で鳴る発振音を送ります。
-
-### ヘッドセット・別の端末で使う場合
-
-- マイクは HTTPS (または localhost) のページでしか使えません。LAN 内のヘッドセットから使うときは、`npm run dev:https` か `adb reverse` で開いてください。
-- XR に入ってからマイクの許可を求めると、ブラウザによっては許可ダイアログが見えないことがあります。**XR に入る前に、画面の「音声に参加」で許可しておくのが確実です。**
-- 既定では STUN (`stun:stun.l.google.com:19302`) だけを使います。会社のネットワークや携帯回線など、P2P でつながらない環境では TURN サーバーが必要です。ビルド時に `VITE_ICE_SERVERS` で指定してください。
-
-```bash
-VITE_ICE_SERVERS='[{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}]' npm run build
-```
-
-- P2P メッシュなので、参加者が増えると端末ごとの送信量が増えます。目安は 6 人程度までです。
-
-## テスト
-
-```bash
-npm test
-```
-
-次のテストが走ります。
-
-- キャリブの数式
-- ルームの規則 (所有権・競合・切断・ストローク・音声シグナリングの中継)
-- 音声メッシュの張り方 (offer する側の決め方、退出・再接続・失敗時の張り直し)。偽の `RTCPeerConnection` で確かめる
-- 実 WebSocket を使った 2〜3 クライアントの結合テスト (シグナリングの中継を含む)
-
-```bash
-npm run typecheck
-```
-
-## 本番で動かす
-
-```bash
-npm run build
-```
-
-```bash
-npm start
-```
-
-`npm start` は `dist/` を配信し、`/ws` で同期します (既定は `PORT=8787`)。
-HTTPS は前段のリバースプロキシで終端するか、`TLS_CERT` / `TLS_KEY` (PEM ファイルのパス) を渡してください。
-別ホストの同期サーバーにつなぐ場合は、URL に `?server=wss://example.com/ws` を付けます。
-
-## 必要環境
-
-- Node.js 23.6 以上 (TypeScript をそのまま実行するため。開発は Node 26 で確認)
-- three.js r186、ws 8、Vite 8
+[Apache License 2.0](LICENSE). Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
