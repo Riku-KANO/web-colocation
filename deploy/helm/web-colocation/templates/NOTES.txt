@@ -1,0 +1,26 @@
+web-colocation {{ .Chart.AppVersion }} is installed as "{{ include "web-colocation.fullname" . }}".
+
+{{- $host := include "web-colocation.publicHost" . }}
+{{- if $host }}
+
+Open: https://{{ $host }}/
+{{- else }}
+
+No Ingress/HTTPRoute is enabled. For a quick look:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "web-colocation.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080/
+{{- end }}
+
+Headsets only allow WebXR on HTTPS pages (or localhost), so publish it with TLS.
+WebSockets run on the same host at /ws: make sure the load balancer idle timeout is long
+(ALB: idle_timeout.timeout_seconds, GKE: gke.backendConfig.timeoutSec).
+{{- if .Values.oauth2Proxy.enabled }}
+
+SSO: oauth2-proxy ({{ .Values.oauth2Proxy.provider }}) runs next to the app; register the callback
+{{ default (printf "https://%s/oauth2/callback" (default "<your-host>" $host)) .Values.oauth2Proxy.redirectUrl }} with your identity provider.
+Load balancer health checks should use /ping on the service port.
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+
+Persistence is disabled: room state is lost when the pod restarts.
+{{- end }}

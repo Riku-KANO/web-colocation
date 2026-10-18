@@ -123,6 +123,10 @@ rooms:
     expect(() => loadConfig(join(dir, 'missing.yaml'))).toThrow(/cannot read/);
   });
 
+  it('treats empty YAML sections as defaults', () => {
+    expect(parseConfig({ voice: null, rooms: { list: null } }).config.voice.enabled).toBe(true);
+  });
+
   it('runtime options come from the environment', () => {
     expect(runtimeFromEnv({ PORT: '9000', HEALTH_PORT: '9001', HOST: '127.0.0.1' })).toMatchObject({ port: 9000, healthPort: 9001, host: '127.0.0.1' });
     expect(() => runtimeFromEnv({ PORT: 'abc' })).toThrow(/port/);

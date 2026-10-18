@@ -21,6 +21,10 @@ describe('trusted-header identity', () => {
 
   it('falls back to the email local part for the display name', () => {
     expect(extractIdentity({ 'x-forwarded-email': 'bob@acme.com' }, auth())?.name).toBe('bob');
+    // proxies copy the opaque OIDC subject into the preferred-username header when there is none
+    const sub = 'CiQwOGE4Njg0Yi1kYjg4';
+    const id = extractIdentity({ 'x-forwarded-email': 'bob@acme.com', 'x-forwarded-user': sub, 'x-forwarded-preferred-username': sub }, auth());
+    expect(id?.name).toBe('bob');
   });
 
   it('returns null when auth is off or the proxy sent nothing', () => {

@@ -1,0 +1,37 @@
+# Google Kubernetes Engine with the built-in (GCE) Ingress and a Google-managed certificate.
+# Create the certificate and a static IP first:
+#   gcloud compute addresses create xr-ip --global
+#   kubectl -n xr apply -f - <<'YAML'
+#   apiVersion: networking.gke.io/v1
+#   kind: ManagedCertificate
+#   metadata: { name: xr-cert }
+#   spec: { domains: [xr.acme.example] }
+#   YAML
+config:
+  branding:
+    productName: Acme XR Rooms
+
+ingress:
+  enabled: true
+  className: gce          # gce-internal for an internal load balancer
+  annotations:
+    networking.gke.io/managed-certificates: xr-cert
+    kubernetes.io/ingress.global-static-ip-name: xr-ip
+  hosts:
+    - host: xr.acme.example
+      paths:
+        - path: /
+          pathType: Prefix
+
+service:
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+
+gke:
+  backendConfig:
+    enabled: true        # raises the 30 s backend timeout that would cut WebSockets
+    timeoutSec: 3600
+    drainingTimeoutSec: 30
+
+persistence:
+  storageClass: standard-rwo

@@ -1,0 +1,217 @@
+{{- $sso := .Values.oauth2Proxy.enabled }}
+{{- define "web-colocation.oauth2ProxyContainer" }}
+- name: oauth2-proxy
+  image: "{{ .Values.oauth2Proxy.image.repository }}:{{ .Values.oauth2Proxy.image.tag }}"
+  imagePullPolicy: {{ .Values.oauth2Proxy.image.pullPolicy }}
+  {{- if .Values.oauth2Proxy.nativeSidecar }}
+  # Native sidecar: starts before and stops after the app, so WebSockets are closed cleanly.
+  restartPolicy: Always
+  {{- end }}
+  args:
+    - --http-address=0.0.0.0:4180
+    - --upstream=http://127.0.0.1:8080/
+    - --provider={{ .Values.oauth2Proxy.provider }}
+    {{- with .Values.oauth2Proxy.oidcIssuerUrl }}
+    - --oidc-issuer-url={{ . }}
+    {{- end }}
+    {{- $host := include "web-colocation.publicHost" . }}
+    {{- $redirect := .Values.oauth2Proxy.redirectUrl }}
+    {{- if and (not $redirect) $host }}
+    {{- $redirect = printf "https://%s/oauth2/callback" $host }}
+    {{- end }}
+    {{- with $redirect }}
+    - --redirect-url={{ . }}
+    {{- end }}
+    {{- range .Values.oauth2Proxy.emailDomains }}
+    - --email-domain={{ . }}
+    {{- end }}
+    {{- range .Values.oauth2Proxy.allowedGroups }}
+    - --allowed-group={{ . }}
+    {{- end }}
+    # Identity headers for the app (X-Forwarded-User/Email/Groups/Preferred-Username).
+    - --pass-user-headers=true
+    - --reverse-proxy=true
+    - --skip-provider-button=true
+    # Do not force the consent screen on every sign-in.
+    - --approval-prompt=auto
+    - --cookie-secure=true
+    - --silence-ping-logging=true
+    {{- range .Values.oauth2Proxy.extraArgs }}
+    - {{ . }}
+    {{- end }}
+  env:
+    - name: OAUTH2_PROXY_CLIENT_ID
+      value: {{ required "oauth2Proxy.clientId is required" .Values.oauth2Proxy.clientId | quote }}
+    - name: OAUTH2_PROXY_CLIENT_SECRET
+      valueFrom: { secretKeyRef: { name: {{ include "web-colocation.oauth2SecretName" . }}, key: client-secret } }
+    - name: OAUTH2_PROXY_COOKIE_SECRET
+      valueFrom: { secretKeyRef: { name: {{ include "web-colocation.oauth2SecretName" . }}, key: cookie-secret } }
+    {{- with .Values.oauth2Proxy.extraEnv }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  ports:
+    - name: proxy
+      containerPort: 4180
+  readinessProbe:
+    httpGet: { path: /ping, port: proxy }
+    periodSeconds: 10
+  livenessProbe:
+    httpGet: { path: /ping, port: proxy }
+    periodSeconds: 20
+  resources:
+    {{- toYaml .Values.oauth2Proxy.resources | nindent 4 }}
+  securityContext:
+    {{- toYaml .Values.securityContext | nindent 4 }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "web-colocation.fullname" . }}
+  labels:
+    {{- include "web-colocation.labels" . | nindent 4 }}
+spec:
+  # Rooms live in one process; never run two pods side by side (not even during an update).
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "web-colocation.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "web-colocation.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if and $sso (not .Values.oauth2Proxy.existingSecret) }}
+        checksum/oauth2-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "web-colocation.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if and $sso .Values.oauth2Proxy.nativeSidecar }}
+      initContainers:
+        {{- include "web-colocation.oauth2ProxyContainer" . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: app
+          image: {{ include "web-colocation.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # With SSO the app is reachable only through the proxy in the same pod.
+            - name: HOST
+              value: {{ ternary "127.0.0.1" "0.0.0.0" $sso | quote }}
+            - name: PORT
+              value: "8080"
+            - name: HEALTH_PORT
+              value: "8081"
+            - name: COLO_CONFIG
+              value: /config/config.yaml
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- if include "web-colocation.hasTurnSecret" . }}
+            - name: TURN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "web-colocation.turnSecretName" . }}
+                  key: {{ .Values.turn.secretKey }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            {{- if not $sso }}
+            - name: http
+              containerPort: 8080
+            {{- end }}
+            - name: health
+              containerPort: 8081
+          startupProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 20
+          lifecycle:
+            preStop:
+              # Let the load balancer stop routing new connections before shutdown starts.
+              exec:
+                command: ["sleep", "{{ .Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if or .Values.assets.existingClaim .Values.assets.configMap }}
+            - name: assets
+              mountPath: /assets
+              readOnly: true
+            {{- end }}
+        {{- if and $sso (not .Values.oauth2Proxy.nativeSidecar) }}
+        {{- include "web-colocation.oauth2ProxyContainer" . | indent 8 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ default (include "web-colocation.fullname" .) .Values.existingConfigMap }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (include "web-colocation.fullname" .)) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.assets.existingClaim }}
+        - name: assets
+          persistentVolumeClaim:
+            claimName: {{ .Values.assets.existingClaim }}
+            readOnly: true
+        {{- else if .Values.assets.configMap }}
+        - name: assets
+          configMap:
+            name: {{ .Values.assets.configMap }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

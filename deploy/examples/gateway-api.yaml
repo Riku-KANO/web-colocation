@@ -1,0 +1,11 @@
+# Gateway API (Envoy Gateway, GKE Gateway, AWS LBC Gateway, NGINX Gateway Fabric, ...).
+# The Gateway (listener, TLS certificate) is managed by your platform team.
+# Make sure the implementation allows long-lived WebSocket connections (idle/request timeouts).
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: shared-gateway
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - xr.acme.example

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: web-colocation
+description: WebXR meeting rooms — shared objects, pens, whiteboards and spatial voice for headsets and browsers.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+# Native sidecars (initContainers with restartPolicy: Always) are used for oauth2-proxy.
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/OWNER/web-colocation
+sources:
+  - https://github.com/OWNER/web-colocation
+keywords: [webxr, mixed-reality, meeting, collaboration, whiteboard, quest, android-xr]
+annotations:
+  artifacthub.io/license: Apache-2.0

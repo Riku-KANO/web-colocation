@@ -1,5 +1,5 @@
 {
-  "$id": "https://github.com/web-colocation/web-colocation/schema/config.schema.json",
+  "$id": "https://github.com/OWNER/web-colocation/schema/config.schema.json",
   "title": "web-colocation configuration",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",

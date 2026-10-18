@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "web-colocation.fullname" . }}-test"
+  labels:
+    {{- include "web-colocation.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile: { type: RuntimeDefault }
+  containers:
+    - name: check
+      image: curlimages/curl:8.16.0
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: [ALL] }
+      # With SSO the proxy answers /ping; otherwise the app serves its config.
+      args:
+        - --fail
+        - --silent
+        - --show-error
+        - "http://{{ include "web-colocation.fullname" . }}:{{ .Values.service.port }}{{ ternary "/ping" "/api/config" .Values.oauth2Proxy.enabled }}"

@@ -59,8 +59,11 @@ export function extractIdentity(headers: IncomingHttpHeaders, auth: AppConfig['a
     .map((g) => g.trim())
     .filter(Boolean)
     .slice(0, 100);
+  // OIDC `sub` values (X-Forwarded-User) are often opaque ids, and proxies fall back to them for
+  // the preferred username when the IdP sends none — so only trust a name that differs from it.
   const preferred = h.name ? header(headers, h.name) : null;
-  const name = (preferred ?? (user && !user.includes('@') ? user : null) ?? email?.split('@')[0] ?? user ?? 'user').slice(0, 32);
+  const readable = preferred && preferred !== user ? preferred : null;
+  const name = (readable ?? email?.split('@')[0] ?? user ?? 'user').slice(0, 32);
   return { user, email, groups, name };
 }
 

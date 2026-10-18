@@ -71,12 +71,21 @@ function mergeSection(base: Record<string, unknown>, extra: Record<string, unkno
   return out;
 }
 
+/** YAML keys left empty (e.g. `voice:` with everything commented out) mean "use defaults". */
+function dropNulls(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(dropNulls);
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null).map(([k, x]) => [k, dropNulls(x)]));
+  }
+  return v;
+}
+
 /** Parse + validate a config object (already read from YAML/JSON). */
 export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = {}, source: string | null = null): LoadedConfig {
   if (raw !== undefined && raw !== null && (typeof raw !== 'object' || Array.isArray(raw))) {
     throw new ConfigError('the config file must contain a mapping at the top level');
   }
-  const merged = mergeSection((raw as Record<string, unknown>) ?? {}, envOverrides(env));
+  const merged = mergeSection((dropNulls(raw) as Record<string, unknown>) ?? {}, envOverrides(env));
   const result = AppConfigSchema.safeParse(merged);
   if (!result.success) throw new ConfigError(`invalid configuration${source ? ` in ${source}` : ''}:\n${z.prettifyError(result.error)}`);
   const config = result.data;

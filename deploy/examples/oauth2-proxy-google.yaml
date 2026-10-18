@@ -1,0 +1,28 @@
+# Company SSO with Google Workspace. Create an OAuth client (Web application) with the redirect
+# URI https://xr.acme.example/oauth2/callback, then:
+#   kubectl -n xr create secret generic colo-oauth2 \
+#     --from-literal=client-secret=... --from-literal=cookie-secret="$(openssl rand -hex 16)"
+# Combine with one of the ingress examples (e.g. -f eks-alb.yaml -f oauth2-proxy-google.yaml).
+oauth2Proxy:
+  enabled: true
+  provider: google
+  clientId: 1234567890-abc.apps.googleusercontent.com
+  existingSecret: colo-oauth2
+  emailDomains: [acme.example]
+
+config:
+  auth:
+    admins: [it-admin@acme.example]     # hosts in every room
+  rooms:
+    allowAdhoc: true
+    list:
+      - id: design-review
+        title: { en: Design review, ja: デザインレビュー }
+        template: workshop
+        hosts: [lead@acme.example]
+        access:
+          allowedDomains: [acme.example]
+
+ingress:
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /ping   # oauth2-proxy answers /ping without login

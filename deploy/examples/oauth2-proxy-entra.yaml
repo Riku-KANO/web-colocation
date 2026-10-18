@@ -1,0 +1,16 @@
+# Company SSO with Microsoft Entra ID. Register an app with the redirect URI
+# https://xr.acme.example/oauth2/callback and a client secret, then create the Secret as in
+# oauth2-proxy-google.yaml. Group restrictions use group object IDs.
+oauth2Proxy:
+  enabled: true
+  provider: entra-id
+  oidcIssuerUrl: https://login.microsoftonline.com/<tenant-id>/v2.0
+  clientId: 00000000-0000-0000-0000-000000000000
+  existingSecret: colo-oauth2
+  emailDomains: ["*"]
+  allowedGroups:
+    - 11111111-2222-3333-4444-555555555555
+
+config:
+  auth:
+    admins: [it-admin@acme.example]

@@ -1,0 +1,28 @@
+# Amazon EKS with the AWS Load Balancer Controller (ALB).
+#   helm install colo oci://ghcr.io/OWNER/charts/web-colocation -n xr --create-namespace -f eks-alb.yaml
+config:
+  branding:
+    productName: Acme XR Rooms
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal            # internet-facing for public access
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-northeast-1:123456789012:certificate/REPLACE-ME
+    # WebSockets: the default idle timeout is 60 s.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    # Drain quickly on deploys (the app closes sockets with 1012 and clients reconnect).
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz   # /ping when oauth2Proxy.enabled
+  hosts:
+    - host: xr.acme.example
+      paths:
+        - path: /
+          pathType: Prefix
+
+persistence:
+  storageClass: gp3

@@ -42,7 +42,12 @@ if (config.auth.mode === 'trusted-headers' && !isLoopbackHost(runtime.host) && !
   );
 }
 
-const store = config.storage.driver === 'file' ? await createFileStore(config.storage.dir) : new MemoryStore();
+let store;
+try {
+  store = config.storage.driver === 'file' ? await createFileStore(config.storage.dir) : new MemoryStore();
+} catch (e) {
+  fatal(`storage.dir ${config.storage.dir} is not usable (${(e as Error).message}). Mount a writable volume there or use storage.driver: memory.`);
+}
 const app = createServerApp({ loaded, log, env: process.env, store, staticDir: runtime.staticDir });
 
 const serve = (handler: Handler) => (req: http.IncomingMessage, res: http.ServerResponse) => {

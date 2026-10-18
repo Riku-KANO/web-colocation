@@ -8,3 +8,4 @@ data/
 .env.*
 # Local tooling (Claude Code launch configs etc.)
 .claude/
+.kind-kubeconfig

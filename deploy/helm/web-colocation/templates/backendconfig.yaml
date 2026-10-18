@@ -1,0 +1,18 @@
+{{- if .Values.gke.backendConfig.enabled }}
+# GKE Ingress: keep WebSockets open (the default backend timeout of 30 s would cut them) and
+# health-check the right endpoint.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ include "web-colocation.fullname" . }}
+  labels:
+    {{- include "web-colocation.labels" . | nindent 4 }}
+spec:
+  timeoutSec: {{ .Values.gke.backendConfig.timeoutSec }}
+  connectionDraining:
+    drainingTimeoutSec: {{ .Values.gke.backendConfig.drainingTimeoutSec }}
+  healthCheck:
+    type: HTTP
+    requestPath: {{ ternary "/ping" "/healthz" .Values.oauth2Proxy.enabled }}
+    port: {{ ternary 4180 8080 .Values.oauth2Proxy.enabled }}
+{{- end }}

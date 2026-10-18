@@ -1,0 +1,43 @@
+# SSO demo: oauth2-proxy in front of the app (sharing its network namespace, like the Kubernetes
+# sidecar) and dex as a local identity provider with the user alice@example.com / password.
+#
+#   docker compose -f compose.yaml -f deploy/compose/sso.compose.yaml up --build
+#   open http://localhost:4180
+services:
+  app:
+    ports: !override ["4180:4180"]   # only the proxy is published
+    environment:
+      HOST: 127.0.0.1                # the app is reachable only through the proxy
+      COLO_AUTH_MODE: trusted-headers
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5
+    network_mode: service:app
+    depends_on: [app, dex]
+    command:
+      - --http-address=0.0.0.0:4180
+      - --upstream=http://127.0.0.1:8080/
+      - --provider=oidc
+      # The browser talks to dex on localhost:5556; the proxy reaches it as dex:5556.
+      - --oidc-issuer-url=http://localhost:5556/dex
+      - --skip-oidc-discovery
+      - --login-url=http://localhost:5556/dex/auth
+      - --redeem-url=http://dex:5556/dex/token
+      - --oidc-jwks-url=http://dex:5556/dex/keys
+      - --redirect-url=http://localhost:4180/oauth2/callback
+      - --client-id=colo
+      - --client-secret=colo-demo-secret
+      - --cookie-secret=0123456789abcdef0123456789abcdef
+      - --cookie-secure=false
+      - --email-domain=*
+      - --pass-user-headers=true
+      - --skip-provider-button=true
+      - --approval-prompt=auto
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.45.0
+    command: [dex, serve, /etc/dex/dex.yaml]
+    ports: ["5556:5556"]
+    volumes:
+      # Paths are relative to the first compose file (the repository root).
+      - ./deploy/compose/dex.yaml:/etc/dex/dex.yaml:ro

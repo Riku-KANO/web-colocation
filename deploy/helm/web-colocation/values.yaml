@@ -1,0 +1,155 @@
+# Default values for web-colocation.
+# The app runs as a single replica (rooms live in memory, state is persisted to /data).
+# See deploy/examples/ for EKS (ALB), GKE, Gateway API and SSO setups.
+
+image:
+  # Replaced with the real registry path when the chart is released.
+  repository: ghcr.io/OWNER/web-colocation
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Application configuration (rendered to /config/config.yaml).
+# Schema: schema/config.schema.json in the repository (also enforced by values.schema.json).
+# The chart fills in storage, assets and auth settings that depend on the deployment below.
+config:
+  branding:
+    productName: WebXR Colocation
+  rooms:
+    allowAdhoc: true
+
+# -- Use an existing ConfigMap (key config.yaml) instead of `config`.
+existingConfigMap: ""
+
+logLevel: info
+
+# -- Room state (positions, drawings, host settings) survives restarts on this volume.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  existingClaim: ""
+
+# -- Files served at /room-assets/ (logos, GLB models). Mount one source.
+assets:
+  # PersistentVolumeClaim containing the files.
+  existingClaim: ""
+  # ConfigMap containing small files (use binaryData for images; 1 MiB total limit).
+  configMap: ""
+
+# -- TURN for voice behind strict NATs/firewalls. Configure the URLs in
+# config.voice.turn.urls; the shared secret (coturn static-auth-secret) comes from a Secret.
+turn:
+  # Existing Secret with the shared secret.
+  existingSecret: ""
+  secretKey: turn-secret
+  # Or let the chart create the Secret (not recommended for GitOps).
+  secret: ""
+
+# -- Company SSO with oauth2-proxy as a native sidecar. The app then listens on 127.0.0.1 and
+# trusts the identity headers set by the proxy; the Service points at the proxy.
+oauth2Proxy:
+  enabled: false
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: v7.15.5
+    pullPolicy: IfNotPresent
+  # google | entra-id | oidc | keycloak-oidc | github | gitlab ... (see oauth2-proxy docs)
+  provider: oidc
+  oidcIssuerUrl: ""
+  clientId: ""
+  # Existing Secret with keys client-secret and cookie-secret (recommended).
+  existingSecret: ""
+  # Or let the chart create the Secret. An empty cookieSecret is generated once and kept.
+  clientSecret: ""
+  cookieSecret: ""
+  # Public callback URL, e.g. https://xr.example.com/oauth2/callback (defaults from ingress/httpRoute host).
+  redirectUrl: ""
+  emailDomains: ["*"]
+  allowedGroups: []
+  # Use native sidecars (Kubernetes >= 1.29). Set false to run it as a regular container.
+  nativeSidecar: true
+  extraArgs: []
+  extraEnv: []
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: xr.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# -- Gateway API HTTPRoute (instead of / in addition to Ingress).
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  #  - name: shared-gateway
+  #    namespace: gateway-system
+  hostnames: []
+
+gke:
+  # -- GKE Ingress: WebSockets are cut after the backend timeout (default 30 s), so raise it.
+  backendConfig:
+    enabled: false
+    timeoutSec: 3600
+    drainingTimeoutSec: 30
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { memory: 512Mi }
+
+# Time for the load balancer to stop sending traffic before the app shuts down.
+preStopSleepSeconds: 10
+terminationGracePeriodSeconds: 45
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+extraEnv: []
+extraEnvFrom: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+
+networkPolicy:
+  enabled: false
+  # Peers allowed to reach the app/proxy port (e.g. the ingress controller namespace).
+  ingressFrom: []
+  #  - namespaceSelector:
+  #      matchLabels: { kubernetes.io/metadata.name: ingress-system }

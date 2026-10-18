@@ -1,0 +1,12 @@
+{{- if not .Values.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "web-colocation.fullname" . }}
+  labels:
+    {{- include "web-colocation.labels" . | nindent 4 }}
+data:
+  # Reloaded by the app when it changes (no restart needed).
+  config.yaml: |
+    {{- include "web-colocation.appConfig" . | nindent 4 }}
+{{- end }}

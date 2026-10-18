@@ -1,0 +1,56 @@
+# Local quick start:
+#   docker compose up --build                 → http://localhost:8080
+#   docker compose --profile turn up --build  → also a coturn TURN server (see deploy/compose/config.yaml)
+# SSO demo (dex + oauth2-proxy): see deploy/compose/sso.compose.yaml
+services:
+  app:
+    build: .
+    image: web-colocation:local
+    ports: ["8080:8080"]
+    environment:
+      COLO_CONFIG: /config/config.yaml
+      COLO_STORAGE_DRIVER: file
+      COLO_STORAGE_DIR: /data
+      TURN_SECRET: ${TURN_SECRET:-change-me-turn-secret}
+    volumes:
+      - ./deploy/compose:/config:ro
+      - ./examples/room-assets:/assets:ro
+      - data:/data
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+
+  # Local TURN server for experiments. In production run TURN on hosts with public IPs
+  # (or use STUNner / a managed TURN service) — see docs/turn.md.
+  coturn:
+    profiles: [turn]
+    image: coturn/coturn:4.7.0
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49200:49160-49200/udp"
+    command:
+      - -n
+      - --log-file=stdout
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:-change-me-turn-secret}
+      - --realm=colo.local
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --external-ip=127.0.0.1
+      - --fingerprint
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      # Never relay to private / link-local / metadata addresses.
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+
+volumes:
+  data: {}

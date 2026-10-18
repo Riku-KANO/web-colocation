@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "web-colocation.fullname" . }}
+  labels:
+    {{- include "web-colocation.labels" . | nindent 4 }}
+  {{- $annotations := deepCopy (default dict .Values.service.annotations) }}
+  {{- if .Values.gke.backendConfig.enabled }}
+  {{- $_ := set $annotations "cloud.google.com/backend-config" (printf "{\"default\": \"%s\"}" (include "web-colocation.fullname" .)) }}
+  {{- end }}
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "web-colocation.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ ternary "proxy" "http" .Values.oauth2Proxy.enabled }}
+      protocol: TCP
