@@ -1,6 +1,6 @@
-// リモート参加者の表示 (頭・両手・名札) と、その人の声。姿勢は共有座標系で受け取り、滑らかに追従させる。
-// 同じ「同室 ID (space)」の XR 参加者は実物がパススルーで見えるので、名札だけを出す。
-// 声は頭に付けた PositionalAudio から鳴らす (空間音声)。話している間は名札の縁と頭が光る。
+// Remote participants (head, both hands, name tag) and their voices. Poses arrive in the shared frame and are smoothed.
+// XR participants with the same colocation ID (space) are visible through passthrough, so only their name tag is shown.
+// Voices play from a PositionalAudio on the head (spatial audio). The name tag border and head glow while speaking.
 
 import {
   AudioListener,
@@ -25,12 +25,12 @@ import { readPose, smoothing } from '../util/pose.ts';
 import { LevelMeter } from '../voice/level.ts';
 
 const FOLLOW_RATE = 14;
-/** この距離 (m) までは減衰させない。テーブルを挟んだ相手 (約 1.5 m) が自然な大きさに聞こえる値。 */
+/** No attenuation up to this distance (m); someone across the table (~1.5 m) sounds natural. */
 const VOICE_REF_DISTANCE = 1;
 const VOICE_ROLLOFF = 1.2;
 const LABEL_Y = 0.2;
 
-/** 1 人分の受信音声。 */
+/** Received audio for one participant. */
 class RemoteVoice {
   readonly audio: PositionalAudio;
   readonly meter: LevelMeter;
@@ -38,8 +38,8 @@ class RemoteVoice {
   private muted = false;
 
   constructor(stream: MediaStream, listener: AudioListener) {
-    // Chrome では、リモートの WebRTC ストリームはメディア要素にも繋いでおかないと Web Audio 側が無音になる。
-    // 音はこの要素からは出さない (muted)。
+    // In Chrome, a remote WebRTC stream is silent in Web Audio unless it is also attached to a media element.
+    // The element itself stays muted.
     this.sink = new Audio();
     this.sink.muted = true;
     this.sink.srcObject = stream;
@@ -50,14 +50,14 @@ class RemoteVoice {
     this.audio.setDistanceModel('inverse');
     this.audio.setRefDistance(VOICE_REF_DISTANCE);
     this.audio.setRolloffFactor(VOICE_ROLLOFF);
-    // 人の声は正面に強い。パンナーの正面は +Z、アバターの正面は -Z なので裏返して付ける。
+    // Voices are loudest in front. The panner faces +Z but the avatar faces -Z, so flip it.
     this.audio.setDirectionalCone(160, 320, 0.6);
     this.audio.rotation.y = Math.PI;
-    // 音量はパンナーより前 (距離減衰の前) で測る
+    // Measure the level before the panner (i.e. before distance attenuation).
     this.meter = new LevelMeter(this.audio.source!);
   }
 
-  /** 同室の相手は肉声が聞こえるので、スピーカーからは鳴らさない (二重に聞こえる・エコーになる)。 */
+  /** Colocated participants are heard in person, so don't play them through the speakers (doubling / echo). */
   setMuted(muted: boolean): void {
     if (muted === this.muted) return;
     this.muted = muted;
@@ -107,14 +107,14 @@ class Tracked {
 export class RemoteAvatar {
   readonly root = new Group();
   info: PeerInfo;
-  /** true のときは身体を隠して名札だけにする (同室)。 */
+  /** When true, hide the body and show only the name tag (colocated). */
   colocated = false;
 
   private readonly head: Tracked;
   private readonly hands: [Tracked, Tracked];
   private readonly headBody: Group;
   private readonly label: Sprite;
-  /** 話している間だけ名札の周りに出す光。 */
+  /** Glow around the name tag, shown only while speaking. */
   private readonly halo: Sprite;
   private readonly bodyMat: MeshStandardMaterial;
   private readonly baseColor: Color;
@@ -134,7 +134,7 @@ export class RemoteAvatar {
       new BoxGeometry(0.15, 0.06, 0.05),
       new MeshStandardMaterial({ color: '#111111', roughness: 0.2, metalness: 0.4 }),
     );
-    visor.position.set(0, 0.01, -0.085); // 正面 (-Z)
+    visor.position.set(0, 0.01, -0.085); // front (-Z)
     this.headBody.add(skull, visor);
     this.label = makeLabel(info);
     this.label.position.set(0, LABEL_Y, 0);
@@ -143,7 +143,7 @@ export class RemoteAvatar {
     );
     this.halo.scale.set(0.38, 0.14, 1);
     this.halo.position.set(0, LABEL_Y, 0);
-    this.halo.renderOrder = 9; // 名札 (10) の後ろ
+    this.halo.renderOrder = 9; // behind the name tag (10)
     this.halo.visible = false;
     headGroup.add(this.headBody, this.halo, this.label);
     this.head = new Tracked(headGroup);
@@ -166,7 +166,7 @@ export class RemoteAvatar {
     this.head.set({ p: seatEye(seat, anchor), q: [0, Math.sin(seat.yaw / 2), 0, Math.cos(seat.yaw / 2)] });
   }
 
-  /** 話している度合い (0..1)。音声が届いていなければ 0。 */
+  /** How much they are speaking (0..1); 0 when no audio is received. */
   get level(): number {
     return this.voice?.meter.level ?? 0;
   }
@@ -199,7 +199,7 @@ export class RemoteAvatar {
     this.hands[1].set(pose.hands[1]);
   }
 
-  /** 受信した音声を頭に付ける。null で外す。 */
+  /** Attach received audio to the head; null detaches it. */
   setVoice(stream: MediaStream | null, listener: AudioListener | null): void {
     this.voice?.dispose();
     this.voice = null;
@@ -231,7 +231,7 @@ export class RemoteAvatar {
     });
     this.label.material.map?.dispose();
     this.label.material.dispose();
-    this.halo.material.dispose(); // テクスチャは全員で共有
+    this.halo.material.dispose(); // the texture is shared by everyone
   }
 }
 
@@ -265,7 +265,7 @@ function makeLabel(info: PeerInfo): Sprite {
   return sprite;
 }
 
-/** マイクの絵 (絵文字はヘッドセットのブラウザで出ないことがあるので線で描く)。muted なら赤い斜線。 */
+/** Microphone icon, drawn with lines because emoji may not render in headset browsers. Red slash when muted. */
 function drawMic(ctx: CanvasRenderingContext2D, x: number, y: number, muted: boolean): void {
   ctx.save();
   const c = muted ? '#ff6b6b' : '#7ee2a8';
@@ -295,10 +295,10 @@ function drawMic(ctx: CanvasRenderingContext2D, x: number, y: number, muted: boo
 
 let sharedHalo: Texture | null = null;
 
-/** 名札の縁を光らせるテクスチャ (白。色は SpriteMaterial.color で付ける)。 */
+/** Glow texture for the name tag border (white; tinted via SpriteMaterial.color). */
 function haloTexture(): Texture {
   if (sharedHalo) return sharedHalo;
-  // 名札と同じ縮尺 (0.32 m / 512 px) で、周りに光の余白を取る
+  // Same scale as the name tag (0.32 m / 512 px), with margin around it for the glow.
   const canvas = document.createElement('canvas');
   canvas.width = 608;
   canvas.height = 224;
@@ -308,9 +308,9 @@ function haloTexture(): Texture {
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 16;
   ctx.beginPath();
-  ctx.roundRect(52, 62, 504, 100, 50); // 名札 (makeLabel) の角丸と同じ大きさ
+  ctx.roundRect(52, 62, 504, 100, 50); // same rounded rect as the name tag (makeLabel)
   ctx.stroke();
-  ctx.stroke(); // 重ねて光を強める
+  ctx.stroke(); // stroke again to strengthen the glow
   sharedHalo = new CanvasTexture(canvas);
   sharedHalo.colorSpace = SRGBColorSpace;
   return sharedHalo;
@@ -318,10 +318,10 @@ function haloTexture(): Texture {
 
 export class AvatarManager {
   readonly root = new Group();
-  /** 音声に参加したときに作られる (AudioContext をユーザー操作の後に作るため)。 */
+  /** Created when joining voice (the AudioContext must be created after a user gesture). */
   listener: AudioListener | null = null;
   private readonly avatars = new Map<string, RemoteAvatar>();
-  /** アバターより先に届いた / 作り直しても残す受信音声。 */
+  /** Received audio, kept when it arrives before its avatar or the avatar is rebuilt. */
   private readonly streams = new Map<string, MediaStream>();
   private mySpace = '';
   private myDevice = 'desktop';
@@ -377,7 +377,7 @@ export class AvatarManager {
     this.avatars.get(id)?.setVoice(stream, this.listener);
   }
 
-  /** 話している相手の id と音量。 */
+  /** Id and voice level of each remote participant. */
   *voiceLevels(): Generator<[id: string, level: number, speaking: boolean]> {
     for (const [id, a] of this.avatars) yield [id, a.level, a.speaking];
   }
@@ -399,7 +399,7 @@ export class AvatarManager {
   }
 
   private applyColocation(a: RemoteAvatar): void {
-    // 自分も相手も AR で、同じ同室 ID なら実物が見えている
+    // If we are both in AR with the same colocation ID, they are physically visible.
     a.colocated = this.mySpace !== '' && a.info.space === this.mySpace && this.myDevice === 'ar' && a.info.device === 'ar';
   }
 }

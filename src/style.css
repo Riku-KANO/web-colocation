@@ -191,7 +191,7 @@ button:disabled {
   transition: color 0.15s;
 }
 
-/* 話している人 */
+/* people who are speaking */
 #hud .peers li.speaking {
   color: #7ee2a8;
 }

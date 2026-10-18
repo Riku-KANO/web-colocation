@@ -1,8 +1,8 @@
-// XR 中の入力: コントローラーとハンドトラッキングを同じコードで扱う。
-//   トリガー (select) / グリップ (squeeze) / ピンチ: 物を掴む (近くの物 → レイが当たった物の順)
-//   ペンを掴むとレイの先にペンが付き、ペン先がボードに触れている間だけ線が引ける
-//   何も持たずにボードをトリガー: レイで直接描く
-//   手首パネル: 左手側に表示、右手のレイで押す
+// Input in XR: controllers and hand tracking share the same code.
+//   Trigger (select) / grip (squeeze) / pinch: grab an object (nearby objects first, then the ray hit)
+//   A grabbed pen sits at the end of the ray and only draws while its tip touches a board
+//   Trigger on a board with nothing held: draw directly with the ray
+//   Wrist panel: shown on the left hand, pressed with the right hand's ray
 
 import {
   BoxGeometry,
@@ -41,9 +41,9 @@ type Button = 'select' | 'squeeze';
 const PEN_WIDTH = 0.004;
 const RAY_INK_WIDTH = 0.005;
 const RAY_LENGTH = 3;
-/** ペンを持ったときの、レイ原点からペン中心までのオフセット (ペン軸 = レイ方向)。 */
+/** Offset from the ray origin to the pen's centre while held (pen axis = ray direction). */
 const PEN_OFFSET = new Matrix4().makeTranslation(0, 0, -0.03);
-/** ペン先がボード面からこの範囲にあれば接触とみなす (表側 +, 裏側 -)。 */
+/** The pen tip counts as touching when within this distance of the board surface (front +, back -). */
 const CONTACT_FRONT = 0.008;
 const CONTACT_BACK = -0.05;
 
@@ -127,7 +127,7 @@ export class XRInput {
   private readonly tmpP = new Vector3();
   private readonly tmpQ = new Quaternion();
   private readonly tmpV = new Vector3();
-  /** パネルを持っている手 (null ならワールド固定)。 */
+  /** Hand carrying the panel (null = fixed in the world). */
   private panelHand: HandState | null = null;
   private worldPanelSeat: { seat: SeatSpec; anchor: AnchorSpec } | null = null;
 
@@ -182,7 +182,7 @@ export class XRInput {
     };
   }
 
-  /** 左手 (ハンドトラッキングでもよい) があれば手首に、無ければ席の前に固定してパネルを出す。 */
+  /** Show the panel on the left wrist (hand tracking works too), or fixed in front of the seat without a left hand. */
   reattachPanel(): void {
     const panel = this.deps.panel.mesh;
     const left = this.hands.find((h) => h.source && h.handedness === 'left' && h.source.targetRayMode === 'tracked-pointer');
@@ -212,7 +212,7 @@ export class XRInput {
     panel.rotateX(-0.35);
   }
 
-  /** 左右の手の姿勢 (ワールド行列)。アバター送信用。 */
+  /** Poses of both hands (world matrices), sent as part of our avatar. */
   handMatrix(handedness: 'left' | 'right'): Matrix4 | null {
     const h = this.hands.find((x) => x.source && x.handedness === handedness && x.source.targetRayMode !== 'transient-pointer');
     if (!h) return null;
@@ -234,7 +234,7 @@ export class XRInput {
       h.fallbackModel.visible = !h.isHand && !(h.controllerModel && h.controllerModel.children.length > 0);
       if (h.hold && !objects.isLocallyHeld(h.hold.id)) this.endHold(h, false);
 
-      // 掴んでいる物を手に追従させる
+      // Held objects follow the hand.
       if (h.hold) {
         const world = this.tmpM.multiplyMatrices(h.hold.attach.matrixWorld, h.hold.offset);
         worldToShared(world, sharedRoot, this.tmpP, this.tmpQ);
@@ -242,11 +242,11 @@ export class XRInput {
         if (h.hold.pen) this.updatePen(h, world);
       }
 
-      // キャリブレーション中は指先/コントローラー先端に目印
+      // During calibration, mark the fingertip / controller tip.
       h.tipMarker.visible = calibrating;
       if (calibrating) this.tipWorld(h, h.tipMarker.position);
 
-      // レイ: パネル・ボタン・ボード・物に当てて長さとホバーを決める
+      // Ray: hit-test the panel, buttons, boards and objects to set its length and hover state.
       const showRay = !h.hold && h.source.targetRayMode !== 'transient-pointer';
       h.ray.visible = showRay;
       if (!showRay && !h.rayStroke) continue;
@@ -263,7 +263,7 @@ export class XRInput {
     panel.setHover(panelHover);
   }
 
-  /** 全部手放す (セッション終了・再接続時)。 */
+  /** Release everything (on session end or reconnect). */
   releaseAll(): void {
     for (const h of this.hands) {
       this.endHold(h);
@@ -271,7 +271,7 @@ export class XRInput {
     }
   }
 
-  // ---- 内部 ----
+  // ---- internals ----
 
   private press(h: HandState, button: Button): void {
     const { objects, boards, panel } = this.deps;
@@ -301,10 +301,10 @@ export class XRInput {
     }
     if (h.hold || h.rayStroke) return;
 
-    // 1) 手の届く範囲の物
+    // 1) Objects within reach
     const tipShared = pointWorldToShared(this.tipWorld(h, this.tmpV), this.deps.sharedRoot, new Vector3());
     let target: SyncedObject | null | undefined = objects.nearest(tipShared);
-    // 2) レイが当たった物 / ボード
+    // 2) Object or board hit by the ray
     if (!target) {
       const hit = this.rayHit(h);
       const id = hit?.object.userData.objectId as string | undefined;
@@ -320,10 +320,10 @@ export class XRInput {
 
   private grab(h: HandState, obj: SyncedObject, button: Button): void {
     if (!this.deps.objects.tryGrab(obj.id)) {
-      h.haptic(0.2, 120); // 他の人が持っている
+      h.haptic(0.2, 120); // someone else is holding it
       return;
     }
-    // 反対の手から持ち替え
+    // Hand over from the other hand.
     for (const other of this.hands) if (other !== h && other.hold?.id === obj.id) this.endHold(other, false);
 
     const pen = obj.kind === 'pen';
@@ -374,7 +374,7 @@ export class XRInput {
     } else hold.stroke.add(touched.u, touched.v);
   }
 
-  /** 指先 (ハンド) またはコントローラー先端のワールド座標。 */
+  /** World position of the fingertip (hand) or controller tip. */
   private tipWorld(h: HandState, out: Vector3): Vector3 {
     if (h.isHand) {
       const tip = h.hand.joints['index-finger-tip'];
@@ -390,7 +390,7 @@ export class XRInput {
     const targets: Object3D[] = [...boards.surfaces(), ...boards.clearButtons(), ...objects.pickables()];
     if (panel.mesh.parent && this.panelHand !== h) targets.unshift(panel.mesh);
     const hits = this.raycaster.intersectObjects(targets, true);
-    // パネルは depthTest なしで最前面に描くので、当たっていれば最優先
+    // The panel is drawn on top without depthTest, so a panel hit always wins.
     return hits.find((x) => x.object === panel.mesh) ?? hits[0] ?? null;
   }
 }

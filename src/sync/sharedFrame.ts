@@ -94,7 +94,7 @@ export type CalibrationKind = 'auto' | 'one-point' | 'two-point' | 'desktop';
 export class SharedFrame {
   readonly root = new Group();
   kind: CalibrationKind = 'desktop';
-  /** XRAnchor で追従中か (UI 表示用)。 */
+  /** Whether an XRAnchor is keeping the frame aligned (shown in the UI). */
   anchored = false;
 
   private anchor: XRAnchor | null = null;
@@ -107,7 +107,7 @@ export class SharedFrame {
     this.set(desktopFrame({ kind: 'table', floorOffset: 0.72 }), 'desktop');
   }
 
-  /** 新しいキャリブレーション結果を適用する。XR 中なら次のフレームでアンカーを張る。 */
+  /** Apply a new calibration. In XR, an anchor is created on the next frame. */
   set(localFromShared: Matrix4, kind: CalibrationKind, useAnchor = false): void {
     this.kind = kind;
     this.root.matrix.copy(localFromShared);
@@ -117,7 +117,7 @@ export class SharedFrame {
     this.pendingAnchor = useAnchor ? localFromShared.clone() : null;
   }
 
-  /** 毎フレーム呼ぶ。XRFrame 内でしかアンカーを作れないのでここで処理する。 */
+  /** Call every frame. Anchors can only be created inside an XRFrame, so that happens here. */
   update(frame: XRFrame | undefined, refSpace: XRReferenceSpace | null): void {
     if (!frame || !refSpace) return;
     if (this.pendingAnchor && typeof frame.createAnchor === 'function') {
@@ -131,7 +131,7 @@ export class SharedFrame {
         .createAnchor(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), refSpace)
         ?.then((anchor) => {
           if (gen !== this.generation) {
-            anchor.delete(); // その間に再キャリブされた
+            anchor.delete(); // recalibrated in the meantime
             return;
           }
           this.anchor = anchor;
@@ -140,7 +140,7 @@ export class SharedFrame {
         .catch((e: unknown) => console.warn('[colo] createAnchor failed', e));
     }
     if (this.anchor) {
-      // 端末のトラッキング補正 (再ローカライズ) に合わせて共有座標系を動かす
+      // Move the shared frame along with the device's tracking corrections (relocalization).
       if (!frame.trackedAnchors || frame.trackedAnchors.has(this.anchor)) {
         const pose = frame.getPose(this.anchor.anchorSpace, refSpace);
         if (pose) {
@@ -151,13 +151,13 @@ export class SharedFrame {
     }
   }
 
-  /** XR セッション終了時など、アンカーが無効になるときに呼ぶ。 */
+  /** Call when the anchor becomes invalid, e.g. when the XR session ends. */
   dropAnchor(): void {
     this.generation++;
     try {
       this.anchor?.delete();
     } catch {
-      // セッション終了後の delete は失敗してよい
+      // delete() may fail once the session has ended
     }
     this.anchor = null;
     this.anchored = false;

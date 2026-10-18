@@ -17,7 +17,7 @@ function expectClose(a: Vector3, b: Vector3, eps = 1e-6) {
   expect(a.distanceTo(b)).toBeLessThan(eps);
 }
 
-/** 任意の剛体変換 (端末ごとに違うローカル参照空間を模擬)。 */
+/** Arbitrary rigid transform (simulates each device's different local reference space). */
 function deviceSpace(yaw: number, tx: number, tz: number): Matrix4 {
   return new Matrix4().compose(
     new Vector3(tx, 0, tz),
@@ -26,26 +26,26 @@ function deviceSpace(yaw: number, tx: number, tz: number): Matrix4 {
   );
 }
 
-describe('frameFromTwoPoints (同室キャリブレーション)', () => {
-  it('原点は中点、+X は A→B 方向', () => {
+describe('frameFromTwoPoints (same-room calibration)', () => {
+  it('puts the origin at the midpoint with +X pointing from A to B', () => {
     const a = new Vector3(1, 0.7, 2);
-    const b = new Vector3(1, 0.74, 0); // A から -Z 方向
+    const b = new Vector3(1, 0.74, 0); // -Z from A
     const m = frameFromTwoPoints(a, b);
     expectClose(toLocal(m, 0, 0, 0), new Vector3(1, 0.72, 1));
     const xAxis = toLocal(m, 1, 0, 0).sub(toLocal(m, 0, 0, 0));
     expectClose(xAxis, new Vector3(0, 0, -1));
   });
 
-  it('2 台の端末が同じ物理点をタッチすれば、共有座標が物理的に一致する', () => {
-    // 物理空間の 2 点 (テーブル短辺の中点)
+  it('makes shared coordinates match physically when two devices touch the same points', () => {
+    // Two physical points (midpoints of the table's short edges).
     const physA = new Vector3(-0.7, 0.72, 0.3);
     const physB = new Vector3(0.7, 0.72, 0.1);
-    // 端末ごとに原点も向きも違うローカル空間: local = D⁻¹ · physical
+    // Each device's local space has its own origin and heading: local = D⁻¹ · physical
     const devices = [deviceSpace(0.3, 2, -1), deviceSpace(-2.1, -0.5, 4)];
     const sharedOfSomePhysicalPoint = devices.map((d) => {
       const inv = d.clone().invert();
       const m = frameFromTwoPoints(physA.clone().applyMatrix4(inv), physB.clone().applyMatrix4(inv));
-      // 物理空間のある点 (たとえば相手の頭) を各端末の共有座標で表す
+      // Express one physical point (e.g. the other person's head) in each device's shared frame.
       const head = new Vector3(0.2, 1.2, 0.9).applyMatrix4(inv);
       return toShared(m, head);
     });
@@ -53,12 +53,12 @@ describe('frameFromTwoPoints (同室キャリブレーション)', () => {
   });
 });
 
-describe('frameFromOnePoint (リモート: 各自の机)', () => {
-  it('自分のいる方向が、共有座標系での自分の席の方向になる', () => {
+describe('frameFromOnePoint (remote: each at their own desk)', () => {
+  it('maps the direction toward the viewer to the direction of their seat in the shared frame', () => {
     for (const seatIndex of [0, 1, 2]) {
       const seat = seatAt(seatIndex);
       const point = new Vector3(3, 0.7, -2);
-      const viewer = new Vector3(5, 1.2, -2); // 机の +X 側に座っている
+      const viewer = new Vector3(5, 1.2, -2); // sitting on the +X side of the desk
       const m = frameFromOnePoint(point, viewer, seat, TABLE);
       expectClose(toLocal(m, 0, 0, 0), point);
       const v = toShared(m, viewer);
@@ -68,8 +68,8 @@ describe('frameFromOnePoint (リモート: 各自の机)', () => {
     }
   });
 
-  it('向かい合う 2 人 (席 0 と 1) は、共有空間でもテーブルを挟んで向かい合う', () => {
-    // 2 人は別々の部屋で、それぞれ自分の机の手前に座っている
+  it('keeps two people facing each other (seats 0 and 1) across the table in the shared space', () => {
+    // The two are in separate rooms, each sitting in front of their own desk.
     const alice = frameFromOnePoint(new Vector3(0, 0.7, -0.6), new Vector3(0, 1.2, 0), seatAt(0), TABLE);
     const bob = frameFromOnePoint(new Vector3(10, 0.75, 5), new Vector3(10.5, 1.15, 5.1), seatAt(1), TABLE);
     const aliceHead = toShared(alice, new Vector3(0, 1.2, 0));

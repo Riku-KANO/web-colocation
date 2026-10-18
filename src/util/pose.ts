@@ -4,7 +4,7 @@ import type { Pose } from '../../shared/protocol.ts';
 const _m = new Matrix4();
 const _s = new Vector3();
 
-/** 小数点以下を丸めてネットワーク送信量を抑える (0.1 mm / 1e-5)。 */
+/** Rounds off decimals to keep network payloads small (0.1 mm / 1e-5). */
 const round = (x: number, k: number) => Math.round(x * k) / k;
 
 export function toPose(p: Vector3, q: Quaternion): Pose {
@@ -20,8 +20,8 @@ export function readPose(pose: Pose, p: Vector3, q: Quaternion): void {
 }
 
 /**
- * ワールド行列を共有座標系に変換する。
- * sharedRoot はシーン直下にあり、その行列が「ローカル(XR 参照空間) ← 共有」の変換。
+ * Converts a world matrix into the shared frame.
+ * sharedRoot sits directly under the scene, and its matrix is the "local (XR reference space) ← shared" transform.
  */
 export function worldToShared(world: Matrix4, sharedRoot: Object3D, outP: Vector3, outQ: Quaternion): void {
   _m.copy(sharedRoot.matrixWorld).invert().multiply(world);
@@ -33,7 +33,7 @@ export function pointWorldToShared(world: Vector3, sharedRoot: Object3D, out: Ve
   return out.copy(world).applyMatrix4(_m);
 }
 
-/** フレームレートに依存しない指数平滑化の係数。rate が大きいほど速く追従する。 */
+/** Frame-rate-independent exponential smoothing factor; a higher rate follows faster. */
 export function smoothing(rate: number, dt: number): number {
   return 1 - Math.exp(-rate * dt);
 }

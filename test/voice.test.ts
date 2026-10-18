@@ -1,4 +1,4 @@
-// VoiceMesh (P2P メッシュの張り方) の規則を、偽の RTCPeerConnection とサーバー代わりの中継で確かめる。
+// Checks the VoiceMesh (P2P mesh setup) rules with a fake RTCPeerConnection and a relay standing in for the server.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClientMsg, PeerInfo, RtcIceCandidate, VoiceState } from '../shared/protocol.ts';
@@ -59,7 +59,7 @@ class FakePC {
   async setLocalDescription(d: RTCSessionDescriptionInit) {
     this.localDescription = d;
     this.signalingState = d.type === 'offer' ? 'have-local-offer' : 'stable';
-    // 本物と同じく、SLD の後に ICE 候補が出てくる
+    // Like the real thing, ICE candidates appear after SLD
     setTimeout(() =>
       this.onicecandidate?.({
         candidate: {
@@ -87,14 +87,14 @@ class FakePC {
     this.closed = true;
     this.connectionState = 'closed';
   }
-  /** テスト用: 接続状態を変える。 */
+  /** Test helper: change the connection state. */
   set(state: RTCPeerConnectionState) {
     this.connectionState = state;
     this.onconnectionstatechange?.();
   }
 }
 
-/** サーバー (Room) の代わりに rtc-* を宛先の VoiceMesh へ非同期で届ける。 */
+/** Stands in for the server (Room): delivers rtc-* to the target VoiceMesh asynchronously. */
 class Net {
   readonly nodes = new Map<string, Node>();
   readonly log: Array<{ from: string; msg: ClientMsg }> = [];
@@ -136,7 +136,7 @@ class Node {
     });
   }
 
-  /** 最後に作った、まだ閉じていない接続。 */
+  /** The most recently created connection that is still open. */
   get pc(): FakePC | undefined {
     return this.pcs.filter((p) => !p.closed).at(-1);
   }
@@ -180,7 +180,7 @@ function pair() {
 }
 
 describe('VoiceMesh', () => {
-  it('id の小さい側だけが offer し、answer と ICE を交換して双方に音声が届く', async () => {
+  it('only the smaller id offers; answer and ICE are exchanged and audio flows both ways', async () => {
     const { net, a, b } = pair();
     await flush();
     expect(net.sent('a', 'rtc-offer')).toHaveLength(1);
@@ -191,7 +191,7 @@ describe('VoiceMesh', () => {
     expect(a.pc!.remoteDescription).toMatchObject({ type: 'answer' });
     expect(a.pc!.addedIce).toHaveLength(1);
     expect(b.pc!.addedIce).toHaveLength(1);
-    // answer 側は recvonly で作られたトランシーバを sendrecv にしてマイクを載せる
+    // The answerer switches its recvonly transceiver to sendrecv and attaches the mic
     expect(b.pc!.transceivers[0].direction).toBe('sendrecv');
     expect(b.pc!.transceivers[0].sender.track).toBe(b.track);
     expect(a.pc!.transceivers[0].sender.track).toBe(a.track);
@@ -202,14 +202,14 @@ describe('VoiceMesh', () => {
     b.pc!.set('connected');
     expect(a.mesh.linkState('b')).toBe('connected');
 
-    // マイクの付け外しは再交渉せず送信トラックの差し替えだけ
+    // Attaching/detaching the mic only swaps the sender track, no renegotiation
     a.mesh.setLocalTrack(null);
     await flush();
     expect(a.pc!.transceivers[0].sender.track).toBeNull();
     expect(net.sent('a', 'rtc-offer')).toHaveLength(1);
   });
 
-  it('相手が音声を切ったり退出したら接続を閉じ、戻ってきたら張り直す', async () => {
+  it('closes the link when the peer turns voice off or leaves, and reconnects when it returns', async () => {
     const { net, a, b } = pair();
     await flush();
     const first = a.pc!;
@@ -221,7 +221,7 @@ describe('VoiceMesh', () => {
     a.mesh.sync('a', [peer('a', 'on'), peer('b', 'muted')]);
     await flush();
     expect(net.sent('a', 'rtc-offer')).toHaveLength(2);
-    // b は新しい offer を受けて古い接続を捨てる
+    // b drops its old connection when the new offer arrives
     expect(b.pcs).toHaveLength(2);
     expect(b.pcs[0].closed).toBe(true);
     expect(b.pc).toBe(b.pcs[1]);
@@ -230,24 +230,24 @@ describe('VoiceMesh', () => {
     expect(a.pc).toBeUndefined();
   });
 
-  it('自分が参加していなければ接続を張らず、届いた offer にも応じない', async () => {
+  it('does not connect or answer incoming offers while not in voice', async () => {
     const net = new Net();
     const a = new Node(net, 'a');
     const b = new Node(net, 'b');
     a.mesh.setActive(true);
-    a.mesh.sync('a', [peer('a', 'on'), peer('b', 'on')]); // b は参加中という情報だが、実際の b は未参加
+    a.mesh.sync('a', [peer('a', 'on'), peer('b', 'on')]); // b is listed as in voice, but the real b has not joined
     b.mesh.sync('b', [peer('a', 'on'), peer('b', 'on')]);
     await flush();
     expect(net.sent('a', 'rtc-offer')).toHaveLength(1);
     expect(b.pcs).toHaveLength(0);
     expect(net.sent('b', 'rtc-answer')).toHaveLength(0);
 
-    // a が退出すると全部閉じる
+    // a leaving closes everything
     a.mesh.setActive(false);
     expect(a.pc).toBeUndefined();
   });
 
-  it('規則に反して id の大きい側から来た offer は受けない', async () => {
+  it('ignores an offer from the larger id, which breaks the rules', async () => {
     const { net, a } = pair();
     await flush();
     a.mesh.handleSignal({ t: 'rtc-offer', from: 'b', sdp: 'offer-x' });
@@ -256,14 +256,14 @@ describe('VoiceMesh', () => {
     expect(net.sent('a', 'rtc-answer')).toHaveLength(0);
   });
 
-  it('再接続 (新しい id) で接続を全部作り直し、offer 側も id で決め直す', async () => {
+  it('reconnecting (new id) rebuilds every link and re-picks the offerer by id', async () => {
     const { net, a, b } = pair();
     await flush();
-    a.mesh.disconnect(); // WebSocket が切れた
+    a.mesh.disconnect(); // WebSocket dropped
     expect(a.pcs.every((p) => p.closed)).toBe(true);
     expect(a.streams.size).toBe(0);
 
-    // a は新しい id 'c' で入り直す。'b' < 'c' なので今度は b が offer する
+    // a rejoins as 'c'. 'b' < 'c', so this time b offers
     net.nodes.delete('a');
     a.id = 'c';
     net.nodes.set('c', a);
@@ -278,24 +278,24 @@ describe('VoiceMesh', () => {
     expect(b.streams.has('c')).toBe(true);
   });
 
-  it('失敗したら offer 側が間隔を空けて張り直し、answer 側は新しい offer を待つ', async () => {
+  it('on failure the offerer retries with backoff while the answerer waits for a new offer', async () => {
     const { net, a, b } = pair();
     await flush();
     b.pc!.set('failed');
     expect(b.mesh.linkState('a')).toBe('failed');
-    expect(b.pcs[0].closed).toBe(false); // answer 側は自分からは閉じない
+    expect(b.pcs[0].closed).toBe(false); // the answerer does not close it on its own
 
     a.pc!.set('failed');
     expect(a.pcs[0].closed).toBe(true);
     await flush();
-    expect(net.sent('a', 'rtc-offer')).toHaveLength(1); // すぐには張り直さない
+    expect(net.sent('a', 'rtc-offer')).toHaveLength(1); // no immediate retry
     await vi.advanceTimersByTimeAsync(1000);
     await flush();
     expect(net.sent('a', 'rtc-offer')).toHaveLength(2);
     expect(b.pcs[0].closed).toBe(true);
     expect(b.mesh.linkState('a')).toBe('connecting');
 
-    // つながらないままタイムアウトしても張り直す (2 回目なので 2 秒後)
+    // Also retries after timing out without connecting (2nd attempt, so after 2 s)
     await vi.advanceTimersByTimeAsync(20000);
     await flush();
     expect(net.sent('a', 'rtc-offer')).toHaveLength(2);

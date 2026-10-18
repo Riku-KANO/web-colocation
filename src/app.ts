@@ -38,8 +38,8 @@ import { toPose, worldToShared } from './util/pose.ts';
 import { VoiceChat } from './voice/voiceChat.ts';
 import { detectXRSupport, startXR, type XRMode } from './xr/session.ts';
 
-const POSE_INTERVAL_MS = 50; // アバター姿勢の送信レート (20 Hz)
-const SPEAKING_UI_INTERVAL_MS = 100; // HUD / XR パネルの「話している」表示の更新間隔
+const POSE_INTERVAL_MS = 50; // avatar pose send rate (20 Hz)
+const SPEAKING_UI_INTERVAL_MS = 100; // refresh interval of the "speaking" indicator in the HUD / XR panel
 
 type Calibration = { kind: 'one-point' } | { kind: 'two-point'; a: Vector3 | null };
 
@@ -58,7 +58,7 @@ export class App {
   readonly desktop: DesktopInput;
   readonly xr: XRInput;
   readonly voice: VoiceChat;
-  /** 空間音声の聞き手 (カメラに付く)。音声に参加したときに作る。 */
+  /** Spatial audio listener (attached to the camera). Created when joining voice. */
   listener: AudioListener | null = null;
   hud!: Hud;
 
@@ -187,7 +187,7 @@ export class App {
     this.net.onAuthExpired = () => location.reload();
     this.net.connect();
     this.renderer.setAnimationLoop((t, frame) => {
-      // three.js はループ内で例外が出ると次のフレームを要求しなくなる (XR では画面が固まる) ので必ず捕まえる
+      // three.js stops requesting frames after an exception in the loop (freezing the view in XR), so always catch.
       try {
         this.tick(t, frame);
       } catch (e) {
@@ -232,16 +232,16 @@ export class App {
     return this.room?.anchor ?? { kind: 'table' as const, floorOffset: 0.72 };
   }
 
-  // ---- 音声 ----
+  // ---- voice ----
 
-  /** 未参加なら参加、参加中ならミュート切り替え。必ずユーザー操作 (クリック / XR パネル) から呼ぶ。 */
+  /** Joins voice, or toggles mute if already joined. Must be called from a user gesture (click / XR panel). */
   toggleVoice(): void {
     if (this.voice.state !== 'off') {
       void this.voice.toggleMute();
       return;
     }
     if (!this.listener) {
-      // AudioContext はユーザー操作の後でないと鳴らせないので、ここで初めて作る
+      // An AudioContext can only play after a user gesture, so create it lazily here.
       this.listener = new AudioListener();
       this.camera.add(this.listener);
       this.avatars.listener = this.listener;
@@ -250,16 +250,16 @@ export class App {
     void this.voice.join(this.listener.context);
   }
 
-  // ---- ネットワーク ----
+  // ---- network ----
 
   private onConnState(s: ConnState): void {
     if (s !== 'open') {
-      // 切断中の操作はサーバーに届かないので、掴んでいる物・書きかけは手放す
+      // Actions while disconnected never reach the server, so drop held objects and unfinished strokes.
       this.objects.dropAllLocal();
       this.strokes.abortAll();
       this.desktop.cancel();
       this.xr.releaseAll();
-      // 再接続すると id が変わり相手も古い接続を捨てるので、音声の接続も張り直す (参加状態は保つ)
+      // Reconnecting changes our id and peers drop the old one, so re-establish voice links too (staying joined).
       this.voice.mesh.disconnect();
     }
     this.refreshHud();
@@ -405,7 +405,7 @@ export class App {
     this.hud.setVoice({ state: this.voice.state, busy: this.voice.busy, listenOnly: !this.voice.hasMic });
   }
 
-  /** 話している人 (自分を含む) を HUD と XR パネルに出す。 */
+  /** Shows who is speaking (including yourself) in the HUD and XR panel. */
   private updateSpeaking(now: number): void {
     if (now - this.lastSpeakingUi < SPEAKING_UI_INTERVAL_MS) return;
     this.lastSpeakingUi = now;
@@ -416,7 +416,7 @@ export class App {
     this.speakingNames = [...ids].map((id) => this.peers.get(id)?.name ?? '?');
   }
 
-  // ---- XR セッション ----
+  // ---- XR session ----
 
   private async enterXR(mode: XRMode): Promise<void> {
     try {
@@ -453,7 +453,7 @@ export class App {
     this.avatars.setSelf(this.opts.space, d);
   }
 
-  // ---- キャリブレーション ----
+  // ---- calibration ----
 
   private onPanelButton(id: string): void {
     switch (id) {
@@ -554,7 +554,7 @@ export class App {
     };
   }
 
-  // ---- 毎フレーム ----
+  // ---- per frame ----
 
   private tick(time: number, xrFrame?: XRFrame): void {
     const now = performance.now();
@@ -620,7 +620,7 @@ export class App {
     this.net.send({ t: 'pose', pose: { head, hands } });
   }
 
-  /** 自動テスト・デバッグ用に状態を要約する。 */
+  /** Summarizes the state for automated tests and debugging. */
   debugState() {
     return {
       self: this.self,

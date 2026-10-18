@@ -1,5 +1,5 @@
-// XR 中に使う手首メニュー。ヘッドセットでは DOM オーバーレイが使えないことが多いので、
-// 状態表示とボタンを 1 枚の CanvasTexture に描き、コントローラーのレイで押す。
+// Wrist menu used while in XR. Headsets often lack DOM overlays, so the status and buttons
+// are drawn onto a single CanvasTexture and pressed with the controller ray.
 
 import { CanvasTexture, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace } from 'three';
 
@@ -7,13 +7,13 @@ export interface PanelButton {
   id: string;
   label: string;
   active?: boolean;
-  /** 押せない (薄く描き、押しても反応しない)。 */
+  /** Not pressable (drawn faded and ignores presses). */
   disabled?: boolean;
 }
 
 const W = 768;
 const H = 640;
-/** 状態表示 4 行ぶん。 */
+/** Room for four status lines. */
 const STATUS_H = 256;
 const COLS = 2;
 const PAD = 14;
@@ -54,7 +54,7 @@ export class XRPanel {
     this.redrawIfChanged();
   }
 
-  /** UV (0..1, 左下原点) の位置にあるボタン id。 */
+  /** Id of the button at the given UV (0..1, origin at bottom-left). */
   buttonAt(uv: { x: number; y: number }): string | null {
     const x = uv.x * W;
     const y = (1 - uv.y) * H;

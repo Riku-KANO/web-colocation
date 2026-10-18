@@ -3,13 +3,13 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import { defineConfig } from 'vite';
 import { colocationServerPlugin } from './server/vitePlugin.ts';
 
-// HTTPS=1 のとき自己署名証明書で HTTPS 化する (LAN 内のヘッドセットから WebXR を使うのに必要)。
+// HTTPS=1 serves over HTTPS with a self-signed cert (WebXR from a headset on the LAN requires it).
 const https = !!process.env.HTTPS;
 
 export default defineConfig({
   plugins: [colocationServerPlugin(), ...(https ? [basicSsl()] : [])],
   server: {
-    host: true, // LAN に公開 (ヘッドセットから開くため)
+    host: true, // expose on the LAN so headsets can open it
     port: 5173,
   },
   preview: {
@@ -18,7 +18,7 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
-    chunkSizeWarningLimit: 1000, // three.js 本体で ~700kB
+    chunkSizeWarningLimit: 1000, // three.js alone is ~700 kB
   },
   test: {
     include: ['test/**/*.test.ts'],

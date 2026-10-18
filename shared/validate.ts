@@ -8,18 +8,18 @@ export const LIMITS = {
   idLength: 64,
   nameLength: 32,
   roomLength: 64,
-  /** 1 メッセージあたりのストローク座標数 (u,v を 2 つと数える)。 */
+  /** Stroke coordinates per message (u and v count as two). */
   ptsPerMessage: 2000,
-  /** 1 ストロークあたりの座標数。 */
+  /** Coordinates per stroke. */
   ptsPerStroke: 20000,
   strokesPerRoom: 5000,
   /** Total stroke coordinates kept per room (keeps snapshots and stored state bounded). */
   ptsPerRoom: 600_000,
-  /** 共有座標系で許容する座標の絶対値 (メートル)。 */
+  /** Max absolute coordinate allowed in the shared frame (meters). */
   coord: 1000,
-  /** WebRTC の SDP (音声 1 本なら数 KB)。 */
+  /** WebRTC SDP (a few KB for a single audio track). */
   sdpLength: 16 * 1024,
-  /** ICE 候補の candidate 行 (通常 100〜200 文字)。 */
+  /** ICE candidate line (usually 100-200 chars). */
   iceLength: 1024,
   passcodeLength: 128,
   titleLength: 80,
@@ -155,7 +155,7 @@ function voice(v: unknown): VoiceState | null {
   return VOICES.includes(v as VoiceState) ? (v as VoiceState) : null;
 }
 
-/** 省略 (undefined) と null は null に、それ以外は検証して値か undefined (不正) を返す。 */
+/** Maps omitted (undefined) and null to null; otherwise returns the parsed value, or undefined if invalid. */
 function nullable<T>(v: unknown, parse: (v: unknown) => T | null): T | null | undefined {
   if (v === undefined || v === null) return null;
   return parse(v) ?? undefined;
@@ -172,11 +172,11 @@ function iceCandidate(v: unknown): RtcIceCandidate | null {
   if (candidate === null || sdpMid === undefined || sdpMLineIndex === undefined || usernameFragment === undefined) {
     return null;
   }
-  if (sdpMid === null && sdpMLineIndex === null) return null; // どの m 行の候補か分からない
+  if (sdpMid === null && sdpMLineIndex === null) return null; // can't tell which m-line it belongs to
   return { candidate, sdpMid, sdpMLineIndex, usernameFragment };
 }
 
-/** 不正なら null。正規化済みの新しいオブジェクトを返す。 */
+/** Returns null if invalid, otherwise a new normalized object. */
 export function parseClientMsg(raw: unknown): ClientMsg | null {
   if (!isObj(raw) || typeof raw.t !== 'string') return null;
   switch (raw.t) {

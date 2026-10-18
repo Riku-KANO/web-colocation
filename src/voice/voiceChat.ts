@@ -1,15 +1,16 @@
-// 音声通話の参加状態 (off / muted / on) とマイク。相手との接続は VoiceMesh が受け持つ。
-// マイクの許可と AudioContext の再開はブラウザの制約上ユーザー操作が必要なので、
-// join() / toggleMute() は HUD のボタンか XR パネルのボタンから呼ぶ。
+// Voice call participation (off / muted / on) and the mic. Peer links are handled by VoiceMesh.
+// Browsers require a user gesture for mic permission and resuming the AudioContext,
+// so join() / toggleMute() are called from a HUD button or an XR panel button.
 
 import type { VoiceState } from '../../shared/protocol.ts';
+import { t } from '../i18n/index.ts';
 import { LevelMeter } from './level.ts';
 import { VoiceMesh, type VoiceMeshDeps } from './mesh.ts';
 
 export interface VoiceChatDeps extends Omit<VoiceMeshDeps, 'iceServers' | 'createPeerConnection'> {
-  /** 自分の参加状態が変わった (サーバーへ知らせる・表示を更新する)。 */
+  /** Our participation state changed (tell the server, refresh the UI). */
   onStateChange(state: VoiceState): void;
-  /** 利用者への通知 (トースト)。 */
+  /** User-facing notification (toast). */
   notify(text: string): void;
 }
 
@@ -21,7 +22,7 @@ interface Mic {
 export class VoiceChat {
   readonly mesh: VoiceMesh;
   state: VoiceState = 'off';
-  /** マイクの許可待ちなど。この間はボタンを受け付けない。 */
+  /** E.g. waiting for mic permission; buttons are ignored meanwhile. */
   busy = false;
 
   private readonly deps: VoiceChatDeps;
@@ -39,7 +40,7 @@ export class VoiceChat {
     return this.mic !== null;
   }
 
-  /** 自分の声の大きさ (0..1) と、話しているか。 */
+  /** Our own voice level (0..1) and whether we are speaking. */
   get localLevel(): number {
     return this.state === 'on' ? (this.meter?.level ?? 0) : 0;
   }
@@ -48,15 +49,15 @@ export class VoiceChat {
     return this.state === 'on' && (this.meter?.speaking ?? false);
   }
 
-  /** 通話に参加する。マイクが使えなければ聞くだけ (muted) で参加する。 */
+  /** Join the call. Without a usable mic, join listen-only (muted). */
   async join(ctx: AudioContext): Promise<void> {
     if (this.state !== 'off' || this.busy) return;
     this.ctx = ctx;
     this.setBusy(true);
-    const mic = await this.acquireMic('聞くだけで参加します');
+    const mic = await this.acquireMic(t('voice.fallbackListen'));
     this.setBusy(false);
     this.setMic(mic);
-    // サーバーに参加を知らせてから接続を張る (相手は voice の更新を先に受け取る)
+    // Announce the join before connecting, so peers see the voice update first
     this.setState(mic ? 'on' : 'muted');
     this.mesh.setActive(true);
   }
@@ -76,9 +77,9 @@ export class VoiceChat {
       return;
     }
     if (!this.mic) {
-      // 聞くだけで参加していた: もう一度マイクを取りに行く
+      // Joined listen-only: try to get the mic again
       this.setBusy(true);
-      const mic = await this.acquireMic('ミュートのままにします');
+      const mic = await this.acquireMic(t('voice.fallbackMuted'));
       this.setBusy(false);
       if (!mic) return;
       this.setMic(mic);
@@ -87,7 +88,7 @@ export class VoiceChat {
     this.setState('on');
   }
 
-  /** 毎フレーム (音量表示用)。 */
+  /** Called every frame (drives the level meter). */
   update(dt: number): void {
     this.meter?.update(dt);
   }
@@ -113,18 +114,18 @@ export class VoiceChat {
     if (!mic) return;
     if (this.ctx) this.meter = new LevelMeter(this.ctx.createMediaStreamSource(new MediaStream([mic.track])));
     mic.track.addEventListener('ended', () => {
-      // 抜かれた・権限を取り消された
+      // Unplugged, or permission was revoked
       if (this.mic !== mic) return;
       this.setMic(null);
       if (this.state === 'on') this.setState('muted');
-      this.deps.notify('マイクが使えなくなりました (ミュートにしました)');
+      this.deps.notify(t('voice.micLost'));
     });
   }
 
   private async acquireMic(fallback: string): Promise<Mic | null> {
     if (new URLSearchParams(location.search).get('fakemic') === '1' && this.ctx) return this.fakeMic(this.ctx);
     if (!navigator.mediaDevices?.getUserMedia) {
-      this.deps.notify(`マイクは HTTPS (または localhost) のページでしか使えません。${fallback}`);
+      this.deps.notify(t('voice.needsHttps', { fallback }));
       return null;
     }
     try {
@@ -138,16 +139,16 @@ export class VoiceChat {
       const name = (e as DOMException).name;
       const reason =
         name === 'NotAllowedError'
-          ? 'マイクの使用が許可されませんでした'
+          ? t('voice.denied')
           : name === 'NotFoundError'
-            ? 'マイクが見つかりません'
-            : `マイクを使えません (${name})`;
-      this.deps.notify(`${reason}。${fallback}`);
+            ? t('voice.notFound')
+            : t('voice.unavailable', { name });
+      this.deps.notify(t('voice.reason', { reason, fallback }));
       return null;
     }
   }
 
-  /** `?fakemic=1`: マイクの代わりに 2 秒周期で鳴る発振音を送る (マイクの無い環境・自動テスト用)。 */
+  /** `?fakemic=1`: send a tone that pulses on a 2 s cycle instead of the mic (no-mic machines, automated tests). */
   private fakeMic(ctx: AudioContext): Mic {
     const osc = ctx.createOscillator();
     osc.frequency.value = 330;
@@ -157,7 +158,7 @@ export class VoiceChat {
     lfo.type = 'square';
     lfo.frequency.value = 0.5;
     const depth = ctx.createGain();
-    depth.gain.value = 0.05; // 0〜0.1 の間で鳴ったり止んだりする
+    depth.gain.value = 0.05; // gain toggles between 0 and 0.1, so the tone starts and stops
     lfo.connect(depth).connect(gate.gain);
     const dest = ctx.createMediaStreamDestination();
     osc.connect(gate).connect(dest);

@@ -1,4 +1,4 @@
-// WebXR セッションの開始と、ヘッドセット無しで試すためのエミュレータ (Meta IWER)。
+// Starts WebXR sessions, plus an emulator (Meta IWER) for trying things without a headset.
 
 import type { WebGLRenderer } from 'three';
 
@@ -20,10 +20,10 @@ export async function detectXRSupport(): Promise<XRSupport> {
 }
 
 /**
- * どの端末でも使える機能だけを必須にし、あとは optional で要求する。
- *   local-floor   : 床の高さが分かる参照空間 (無ければ local にフォールバック)
- *   anchors       : キャリブレーション結果をトラッキング補正に追従させる (Quest / Android XR)
- *   hand-tracking : コントローラー無しでピンチ操作 (Quest / Android XR / Vision Pro)
+ * Require only what every device supports and request the rest as optional.
+ *   local-floor   : reference space that knows the floor height (falls back to local)
+ *   anchors       : keeps the calibration in place when tracking corrects itself (Quest / Android XR)
+ *   hand-tracking : pinch without controllers (Quest / Android XR / Vision Pro)
  */
 export async function startXR(renderer: WebGLRenderer, mode: XRMode): Promise<XRSession> {
   const session = await navigator.xr!.requestSession(mode, {
@@ -40,7 +40,7 @@ export async function startXR(renderer: WebGLRenderer, mode: XRMode): Promise<XR
   return session;
 }
 
-/** `?emulate=quest3` のとき、Meta の IWER で WebXR をエミュレートする (開発・自動テスト用)。 */
+/** With `?emulate=quest3`, emulates WebXR using Meta's IWER (for development and automated tests). */
 export async function installEmulatorIfRequested(): Promise<unknown | null> {
   const which = new URLSearchParams(location.search).get('emulate');
   if (!which) return null;
@@ -53,7 +53,7 @@ export async function installEmulatorIfRequested(): Promise<unknown | null> {
   const device = new iwer.XRDevice(configs[which] ?? iwer.metaQuest3);
   device.installRuntime({ forceInstall: true });
   device.stereoEnabled = false;
-  // 座った人の目線の高さ
+  // Eye height of a seated person.
   device.position.set(0, 1.2, 0);
   (window as unknown as { __xrDevice: unknown }).__xrDevice = device;
   console.info('[colo] IWER emulator installed:', device.name);

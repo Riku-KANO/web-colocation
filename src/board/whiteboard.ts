@@ -16,13 +16,13 @@ import type { Stroke } from '../../shared/protocol.ts';
 import type { BoardSpec } from '../../shared/roomConfig.ts';
 
 const CANVAS_W = 1536;
-/** テクスチャ転送の最小間隔。毎フレーム 6MB 転送するとモバイル GPU では重い。 */
+/** Minimum interval between texture uploads; uploading 6 MB every frame is heavy for mobile GPUs. */
 const UPLOAD_INTERVAL_MS = 33;
 
 export interface BoardHit {
   u: number;
   v: number;
-  /** ボード面からの距離 (表側が正, メートル)。 */
+  /** Distance from the board surface (positive in front, meters). */
   depth: number;
 }
 
@@ -64,7 +64,7 @@ export class Whiteboard {
     this.surface.userData.boardId = this.id;
     this.surface.userData.boardSurface = true;
 
-    // 枠
+    // Frame
     const frameMat = new MeshStandardMaterial({ color: '#5b6270', roughness: 0.5 });
     const t = 0.02;
     const top = new Mesh(new BoxGeometry(BOARD.width + 2 * t, t, 0.02), frameMat);
@@ -85,7 +85,7 @@ export class Whiteboard {
     this.redrawAll();
   }
 
-  /** ワールド座標の点をボード座標へ。 */
+  /** Converts a world-space point to board coordinates. */
   toBoard(world: Vector3): BoardHit {
     this.surface.updateWorldMatrix(true, false);
     const p = this.surface.worldToLocal(this.tmp.copy(world));
@@ -158,7 +158,7 @@ export class Whiteboard {
     this.dirty = true;
   }
 
-  /** ストロークの fromPoint 番目の点以降を描く (追記分だけの差分描画)。 */
+  /** Draws a stroke from point index fromPoint onward (only the newly appended part). */
   private drawFrom(s: Stroke, fromPoint: number): void {
     const ctx = this.ctx;
     const n = s.pts.length / 2;
@@ -185,7 +185,7 @@ export class Whiteboard {
   }
 }
 
-/** テキスト付きの 3D ボタン (XR 内でもレイで押せる)。 */
+/** 3D button with a text label (also pressable with a ray in XR). */
 export function makeButton(text: string, w = 0.2, h = 0.06): Mesh {
   const canvas = document.createElement('canvas');
   canvas.width = 512;

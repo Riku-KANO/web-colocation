@@ -15,7 +15,7 @@ import { modelRadius, type ModelLoader } from '../scene/modelLoader.ts';
 import { buildObjectMesh, objectSignature, type BuiltObject } from '../scene/objectMeshes.ts';
 import { readPose, smoothing, toPose } from '../util/pose.ts';
 
-const SEND_INTERVAL_MS = 33; // 掴んでいる間の送信レート (約 30 Hz)
+const SEND_INTERVAL_MS = 33; // send rate while holding (~30 Hz)
 const FOLLOW_RATE = 18;
 const SNAP_DISTANCE = 2;
 
@@ -27,7 +27,7 @@ export class SyncedObject {
   readonly signature: string;
   readonly built: BuiltObject;
   owner: string | null = null;
-  /** この端末で掴んでいるか (楽観的な状態も含む)。 */
+  /** Held on this device (including optimistic holds). */
   localHold = false;
 
   readonly targetP = new Vector3();
@@ -73,7 +73,7 @@ export interface ObjectManagerDeps {
 
 export class ObjectManager {
   readonly root = new Group();
-  /** 自分が掴んでいた物を、競合や再接続で失ったときに呼ばれる。 */
+  /** Called when we lose an object we were holding (to a conflict or a reconnect). */
   onLostHold: (id: string) => void = () => {};
 
   private readonly objs = new Map<string, SyncedObject>();
@@ -93,7 +93,7 @@ export class ObjectManager {
     return this.objs.values();
   }
 
-  /** スナップショット (welcome / objects) で全体を置き換える。 */
+  /** Replace everything with a snapshot (welcome / objects). */
   load(states: ObjectState[]): void {
     const seen = new Set<string>();
     for (const s of states) {
@@ -114,7 +114,7 @@ export class ObjectManager {
         if (s.kind === 'model' && s.model) this.loadModel(o, s.model);
       }
       const self = this.deps.selfId();
-      // 自分が掴んでいる物 (reset-objects で据え置かれた物) はそのまま
+      // Leave objects we are holding alone (reset-objects keeps them where they are).
       if (o.localHold && s.owner === self && self !== null) continue;
       this.dropLocal(o);
       o.owner = s.owner;
@@ -136,7 +136,7 @@ export class ObjectManager {
     if (!o) return;
     o.owner = owner;
     if (owner !== this.deps.selfId()) {
-      if (o.localHold) this.dropLocal(o); // 先着負け
+      if (o.localHold) this.dropLocal(o); // someone else grabbed it first
       if (pose) o.setTarget(pose);
     }
     this.refreshHighlights();
@@ -157,7 +157,7 @@ export class ObjectManager {
     this.refreshHighlights();
   }
 
-  /** 掴めたら true (楽観的)。他人が掴んでいる物は掴めない。 */
+  /** True if grabbed (optimistically). Objects held by others cannot be grabbed. */
   tryGrab(id: string): boolean {
     const o = this.objs.get(id);
     const self = this.deps.selfId();
@@ -172,7 +172,7 @@ export class ObjectManager {
     return true;
   }
 
-  /** 掴んでいる物の姿勢 (共有座標系) を更新する。送信は update() でまとめて行う。 */
+  /** Update a held object's pose (shared frame). Sending is batched in update(). */
   moveLocal(id: string, p: Vector3, q: Quaternion): void {
     const o = this.objs.get(id);
     if (!o || !o.localHold) return;
@@ -197,20 +197,20 @@ export class ObjectManager {
     return this.objs.get(id)?.localHold ?? false;
   }
 
-  /** 接続が切れたら、掴んでいた物をすべて手放した扱いにする。 */
+  /** On disconnect, treat every held object as released. */
   dropAllLocal(): void {
     for (const o of this.objs.values()) this.dropLocal(o);
     this.refreshHighlights();
   }
 
-  /** レイキャスト対象 (他人が掴んでいる物は除く)。 */
+  /** Raycast targets (excluding objects held by others). */
   pickables(): Object3D[] {
     const out: Object3D[] = [];
     for (const o of this.objs.values()) if (this.grabbableBy(o)) out.push(o.root);
     return out;
   }
 
-  /** 共有座標系の点に最も近い、掴める物。 */
+  /** The grabbable object nearest to a point in the shared frame. */
   nearest(pShared: Vector3): SyncedObject | null {
     let best: SyncedObject | null = null;
     let bestD = Infinity;
@@ -286,7 +286,7 @@ export class ObjectManager {
       });
   }
 
-  /** 誰が掴んでいるかを、その人の色の発光で示す。 */
+  /** Show who is holding an object with an emissive glow in their colour. */
   refreshHighlights(): void {
     const self = this.deps.selfId();
     for (const o of this.objs.values()) {

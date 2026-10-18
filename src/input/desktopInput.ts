@@ -1,6 +1,6 @@
-// デスクトップ / スマホ (非 XR) の入力。ヘッドセットが無くても同じルームに参加できる。
-//   ドラッグ (物の上): 水平移動 / Shift+ドラッグ: 上下移動 / ドラッグ中のホイール or Q・E: 回転
-//   ドラッグ (ボード上): 描く / それ以外: 視点の回転・ズーム
+// Desktop / phone (non-XR) input, so people without a headset can join the same room.
+//   Drag (on an object): move horizontally / Shift+drag: move vertically / wheel or Q/E while dragging: rotate
+//   Drag (on a board): draw / anywhere else: orbit and zoom the view
 
 import { Plane, Quaternion, Raycaster, Vector2, Vector3, type Object3D, type PerspectiveCamera } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -35,7 +35,7 @@ interface Drag {
 export class DesktopInput {
   readonly controls: OrbitControls;
   enabled = true;
-  /** 共有座標系でのカーソル位置 (他の参加者には「手」として見える)。 */
+  /** Cursor position in the shared frame (other participants see it as a "hand"). */
   readonly cursor = new Vector3();
   cursorActive = false;
 
@@ -50,7 +50,7 @@ export class DesktopInput {
   constructor(deps: DesktopInputDeps) {
     this.deps = deps;
     const c = deps.canvas;
-    // OrbitControls より先に受け取るため capture で登録する
+    // Listen in the capture phase to get events before OrbitControls.
     c.addEventListener('pointerdown', this.onDown, { capture: true });
     c.addEventListener('pointermove', this.onMove);
     c.addEventListener('pointerup', this.onUp);
@@ -63,7 +63,7 @@ export class DesktopInput {
     this.controls.minDistance = 0.3;
   }
 
-  /** 自分の席からテーブルを見下ろす視点にする。 */
+  /** Look down at the table from our seat. */
   /** Look from slightly behind and above the seat, in the direction the seat faces. */
   placeCamera(seat: SeatSpec, anchor: AnchorSpec): void {
     const { sharedRoot, camera } = this.deps;
@@ -84,7 +84,7 @@ export class DesktopInput {
     if (this.enabled) this.controls.update();
   }
 
-  /** 接続断などで操作を打ち切る。 */
+  /** Abort the current interaction (e.g. on disconnect). */
   cancel(): void {
     if (this.drag) this.deps.objects.release(this.drag.id);
     this.drag = null;
@@ -150,7 +150,7 @@ export class DesktopInput {
       this.setCursor(p);
       p.add(this.drag.offset);
       const shared = pointWorldToShared(p, sharedRoot, new Vector3());
-      shared.y = Math.max(shared.y, -0.7); // 床より下には行かせない
+      shared.y = Math.max(shared.y, -0.7); // don't go below the floor
       objects.moveLocal(this.drag.id, shared, o.root.quaternion);
       return;
     }

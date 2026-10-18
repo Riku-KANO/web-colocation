@@ -59,6 +59,14 @@ export const en = {
   'voice.micOnTitle': 'Microphone on (click to mute)',
   'voice.linkConnecting': 'voice connecting…',
   'voice.linkFailed': 'voice failed',
+  'voice.fallbackListen': 'Joining as a listener.',
+  'voice.fallbackMuted': 'Staying muted.',
+  'voice.micLost': 'The microphone stopped working (muted).',
+  'voice.needsHttps': 'Microphones only work on HTTPS (or localhost) pages. {fallback}',
+  'voice.denied': 'Microphone permission was denied.',
+  'voice.notFound': 'No microphone was found.',
+  'voice.unavailable': 'The microphone cannot be used ({name}).',
+  'voice.reason': '{reason} {fallback}',
 
   // host settings
   'settings.title': 'Room settings',

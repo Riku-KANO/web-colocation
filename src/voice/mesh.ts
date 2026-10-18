@@ -1,13 +1,13 @@
-// 少人数向けの WebRTC P2P メッシュ。音声に参加している相手ごとに RTCPeerConnection を 1 本張る。
-// シグナリングは同期用の WebSocket に相乗りし (rtc-offer / rtc-answer / rtc-ice)、サーバーは宛先へ中継するだけ。
+// WebRTC P2P mesh for small groups: one RTCPeerConnection per peer that is in voice.
+// Signaling rides on the sync WebSocket (rtc-offer / rtc-answer / rtc-ice); the server only relays to the target.
 //
-// 決まりごと (ネイティブクライアントも同じ規則に従えば相互に話せる):
-//   - 接続するのは「自分も相手も voice !== 'off'」のピアとだけ。
-//   - offer を出すのは id が小さい (文字列比較) 側。両側から同時に offer して衝突 (glare) することがない。
-//   - 再交渉はしない。offer 側が最初から sendrecv の音声トランシーバを 1 本だけ作り、
-//     マイクの付け外しは replaceTrack、ミュートは track.enabled で行うので SDP は変わらない。
-//   - 張り直すときは RTCPeerConnection ごと作り直す。新しい offer が届いたら、その相手との古い接続は捨てる。
-//   - 失敗やタイムアウトからの復帰は offer 側が担当する (間隔を空けて offer し直す)。
+// Rules (a native client that follows them can talk to us too):
+//   - Connect only when both we and the peer have voice !== 'off'.
+//   - The side with the smaller id (string comparison) offers, so both sides never offer at once (glare).
+//   - No renegotiation. The offerer creates a single sendrecv audio transceiver up front;
+//     the mic is swapped with replaceTrack and muted with track.enabled, so the SDP never changes.
+//   - Reconnecting recreates the whole RTCPeerConnection. A new offer replaces any old link to that peer.
+//   - The offerer recovers from failures and timeouts (re-offers with backoff).
 
 import type { ClientMsg, PeerInfo, RtcIceCandidate, ServerMsg } from '../../shared/protocol.ts';
 
@@ -16,21 +16,21 @@ export type LinkState = 'connecting' | 'connected' | 'failed';
 
 export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
 
-/** つながるまで待つ時間。過ぎたら offer 側が張り直す。 */
+/** How long to wait for a connection before the offerer starts over. */
 const CONNECT_TIMEOUT_MS = 20000;
-/** disconnected は一時的な瞬断のことが多いので、これだけ待ってから失敗扱いにする。 */
+/** 'disconnected' is often a brief blip, so wait this long before treating it as failed. */
 const DISCONNECTED_GRACE_MS = 5000;
 const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 15000;
 
 export interface VoiceMeshDeps {
   send(msg: ClientMsg): void;
-  /** 相手の音声ストリームが届いた / 無くなった (null)。 */
+  /** A peer's audio stream arrived or went away (null). */
   onRemoteStream(peerId: string, stream: MediaStream | null): void;
-  /** 接続の増減・状態の変化 (表示の更新用)。 */
+  /** Links were added, removed or changed state (to refresh the UI). */
   onLinkChange?(): void;
   iceServers?: RTCIceServer[];
-  /** テストで差し替える。 */
+  /** Replaced in tests. */
   createPeerConnection?(config: RTCConfiguration): RTCPeerConnection;
 }
 
@@ -39,9 +39,9 @@ class Link {
   readonly pc: RTCPeerConnection;
   readonly offerer: boolean;
   state: LinkState = 'connecting';
-  /** SDP / ICE の操作は非同期なので、1 本の接続につき順番に実行する。 */
+  /** SDP / ICE operations are async, so they run one at a time per link. */
   queue: Promise<void> = Promise.resolve();
-  /** リモートの SDP より先に届いた ICE 候補。 */
+  /** ICE candidates that arrived before the remote SDP. */
   readonly pendingIce: RtcIceCandidate[] = [];
   timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -55,9 +55,9 @@ class Link {
 export class VoiceMesh {
   private readonly deps: VoiceMeshDeps;
   private readonly links = new Map<string, Link>();
-  /** 音声に参加している他の参加者。 */
+  /** Other participants who are in voice. */
   private readonly voicePeers = new Set<string>();
-  /** offer し直すまでの待ち (相手ごと)。 */
+  /** Pending re-offer timers, per peer. */
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly attempts = new Map<string, number>();
   private selfId: string | null = null;
@@ -85,13 +85,13 @@ export class VoiceMesh {
     }
   }
 
-  /** 自分が通話に参加しているか。false にすると全部の接続を閉じる。 */
+  /** Whether we are in the call. false closes every link. */
   setActive(active: boolean): void {
     this.active = active;
     this.reconcile();
   }
 
-  /** 送るマイク音声。null なら聞くだけ。張ってある接続にもその場で反映する (再交渉なし)。 */
+  /** Mic track to send; null means listen-only. Applied to existing links in place (no renegotiation). */
   setLocalTrack(track: MediaStreamTrack | null): void {
     this.track = track;
     for (const link of this.links.values()) {
@@ -100,7 +100,7 @@ export class VoiceMesh {
     }
   }
 
-  /** サーバーから届いた最新の参加者一覧と自分の id に、張っている接続をそろえる。 */
+  /** Reconcile links with the latest participant list and our own id from the server. */
   sync(selfId: string | null, peers: Iterable<PeerInfo>): void {
     this.selfId = selfId;
     this.voicePeers.clear();
@@ -109,8 +109,8 @@ export class VoiceMesh {
   }
 
   /**
-   * WebSocket が切れたとき。再接続すると自分の id が変わり、相手も古い id との接続を捨てるので、
-   * こちらも全部閉じて、次の welcome で張り直す。
+   * The WebSocket dropped. Reconnecting gives us a new id and peers drop links to the old one,
+   * so close everything as well and reconnect on the next welcome.
    */
   disconnect(): void {
     this.sync(null, []);
@@ -148,7 +148,7 @@ export class VoiceMesh {
     return this.links.get(peerId)?.state ?? null;
   }
 
-  /** デバッグ表示用。 */
+  /** For the debug overlay. */
   summary(): Array<{ peer: string; state: LinkState; offerer: boolean }> {
     return [...this.links.values()].map((l) => ({ peer: l.peerId, state: l.state, offerer: l.offerer }));
   }
@@ -184,13 +184,13 @@ export class VoiceMesh {
   }
 
   private onOffer(from: string, sdp: string): void {
-    // 規則では offer を出すのは id の小さい側。参加していないはずの相手からの offer も受けない。
+    // Only the smaller id may offer. Also ignore offers from peers that should not be in voice.
     if (this.isOfferer(from) || !this.voicePeers.has(from)) return;
     this.close(from);
     const link = this.open(from, false);
     this.enqueue(link, async () => {
       await link.pc.setRemoteDescription({ type: 'offer', sdp });
-      // offer で作られたトランシーバは recvonly なので、送れるようにしてからマイクを載せる
+      // The transceiver created by the offer is recvonly; make it sendrecv before attaching the mic
       const tr = audioTransceiver(link.pc);
       if (tr) {
         tr.direction = 'sendrecv';
@@ -263,7 +263,7 @@ export class VoiceMesh {
   private fail(link: Link): void {
     if (this.links.get(link.peerId) !== link) return;
     if (!link.offerer) {
-      // 張り直しは offer 側に任せる。新しい offer が届けば作り直される。
+      // Leave reconnecting to the offerer; a new offer will recreate the link.
       link.state = 'failed';
       this.deps.onLinkChange?.();
       return;
@@ -297,7 +297,7 @@ export class VoiceMesh {
 
   private enqueue(link: Link, task: () => Promise<void>): void {
     link.queue = link.queue.then(async () => {
-      if (this.links.get(link.peerId) !== link) return; // 閉じた接続の後始末は不要
+      if (this.links.get(link.peerId) !== link) return; // the link was closed; nothing to do
       try {
         await task();
       } catch (e) {
@@ -320,6 +320,6 @@ async function addIce(pc: RTCPeerConnection, c: RtcIceCandidate): Promise<void> 
   try {
     await pc.addIceCandidate(c);
   } catch {
-    // 作り直す前の接続宛ての古い候補などは捨ててよい
+    // safe to drop, e.g. stale candidates meant for a link that has since been recreated
   }
 }
