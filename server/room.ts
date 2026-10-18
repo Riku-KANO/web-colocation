@@ -2,6 +2,7 @@
 // Transport-agnostic (ws, tests, or a future Durable Object): peers are just `PeerConn`s.
 
 import {
+  CLOSE_FATAL,
   PROTOCOL_VERSION,
   type AvatarPose,
   type ClientMsg,
@@ -15,10 +16,13 @@ import {
 } from '../shared/protocol.ts';
 import type { PermissionLevel, RoomConfig, RoomSettingsPatch } from '../shared/roomConfig.ts';
 import { LIMITS } from '../shared/validate.ts';
+import type { Identity } from './auth.ts';
 
 export interface PeerConn {
   /** Send one serialized JSON message. */
   send(data: string): void;
+  /** Close the connection (used when a participant is removed). */
+  close?(code: number, reason: string): void;
 }
 
 type Hello = Extract<ClientMsg, { t: 'hello' }>;
@@ -30,6 +34,8 @@ export interface JoinRequest {
   verified: boolean;
   /** The identity is listed in the room's hosts or is a global admin. */
   configuredHost: boolean;
+  /** SSO identity (trusted-headers auth), kept to re-check access when the config changes. */
+  identity?: Identity | null;
 }
 
 export interface RoomHooks {
@@ -56,6 +62,7 @@ interface PeerEntry {
   conn: PeerConn;
   pose: AvatarPose | null;
   configuredHost: boolean;
+  identity: Identity | null;
 }
 
 type Action = 'clearBoard' | 'resetObjects' | 'editSettings';
@@ -67,7 +74,7 @@ export class Room {
   config: RoomConfig;
   /** Increases when the room is reconfigured; stale client messages are dropped. */
   epoch = 1;
-  readonly hostMode: RoomOptions['hostMode'];
+  hostMode: RoomOptions['hostMode'];
   private readonly hooks: RoomHooks;
   private readonly peers = new Map<string, PeerEntry>();
   private objects = new Map<string, ObjectState>();
@@ -110,7 +117,7 @@ export class Room {
       role: this.initialRole(req.configuredHost),
       verified: req.verified,
     };
-    this.peers.set(peerId, { info, conn, pose: null, configuredHost: req.configuredHost });
+    this.peers.set(peerId, { info, conn, pose: null, configuredHost: req.configuredHost, identity: req.identity ?? null });
     this.sendTo(peerId, {
       t: 'welcome',
       v: PROTOCOL_VERSION,
@@ -155,6 +162,39 @@ export class Room {
 
   has(peerId: string): boolean {
     return this.peers.has(peerId);
+  }
+
+  /** Participants with their identities (for re-checking access after a config reload). */
+  members(): Array<{ id: string; identity: Identity | null }> {
+    return [...this.peers.values()].map((p) => ({ id: p.info.id, identity: p.identity }));
+  }
+
+  /** Remove a participant with an error (e.g. access revoked); their client will not reconnect. */
+  kick(peerId: string, code: ErrorCode): void {
+    const p = this.peers.get(peerId);
+    if (!p) return;
+    this.sendTo(peerId, { t: 'error', code });
+    p.conn.close?.(CLOSE_FATAL, code);
+    this.leave(peerId);
+  }
+
+  /**
+   * Re-evaluate host roles (config reload changed `hosts` / `admins`). `isConfiguredHost` gets
+   * each participant's identity.
+   */
+  refreshRoles(hostMode: RoomOptions['hostMode'], isConfiguredHost: (identity: Identity | null) => boolean): void {
+    this.hostMode = hostMode;
+    const changed: PeerEntry[] = [];
+    for (const p of this.peers.values()) {
+      p.configuredHost = isConfiguredHost(p.identity);
+      const role: Role = p.configuredHost ? 'host' : hostMode === 'first-joiner' && p.info.role === 'host' ? 'host' : 'member';
+      if (role !== p.info.role) {
+        p.info.role = role;
+        changed.push(p);
+      }
+    }
+    for (const p of changed) this.broadcast({ t: 'peer-update', peer: p.info });
+    this.promoteHost();
   }
 
   handle(peerId: string, msg: ClientMsg): void {

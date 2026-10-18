@@ -12,6 +12,7 @@ import { extractIdentity } from '../auth.ts';
 import type { Logger } from '../log.ts';
 import type { Metrics } from '../metrics.ts';
 import type { RoomRegistry } from '../rooms.ts';
+import { cspHeader } from './csp.ts';
 import { decodePath, resolveInside, sendFile } from './static.ts';
 
 export interface HttpContext {
@@ -28,7 +29,7 @@ export interface HandlerOptions {
 
 export type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
-/** Headers for HTML documents. CSP is added in report-only mode by `securityHeaders` callers. */
+/** Security headers for HTML documents (the CSP comes from csp.ts). */
 export function documentHeaders(): Record<string, string> {
   return {
     'x-content-type-options': 'nosniff',
@@ -102,7 +103,8 @@ export function createHttpHandler(ctx: HttpContext, opts: HandlerOptions): Handl
     }
     // SPA routes all serve index.html.
     const index = join(opts.staticDir, 'index.html');
-    if (await sendFile(req, res, index, { cacheControl: 'no-cache', extraHeaders: documentHeaders() })) return true;
+    const headers = { ...documentHeaders(), ...cspHeader(ctx.registry.config, req.headers.host) };
+    if (await sendFile(req, res, index, { cacheControl: 'no-cache', extraHeaders: headers })) return true;
     return text(res, 404, 'not found (did you run `npm run build`?)\n');
   };
 }

@@ -33,6 +33,15 @@
         "allowServerOverride": {
           "default": false,
           "type": "boolean"
+        },
+        "csp": {
+          "default": "report-only",
+          "type": "string",
+          "enum": [
+            "off",
+            "report-only",
+            "enforce"
+          ]
         }
       },
       "additionalProperties": false

@@ -29,6 +29,8 @@ export interface ServerApp {
   readonly healthHandler: Handler;
   ready: boolean;
   attach(httpServer: EventEmitter): ColocationServer;
+  /** Apply a reloaded configuration. */
+  reload(loaded: LoadedConfig): void;
   /** Graceful stop: not ready → stop upgrades → close sockets with 1012 → persist state. */
   shutdown(): Promise<void>;
 }
@@ -58,14 +60,22 @@ export function createServerApp(opts: ServerAppOptions): ServerApp {
       sockets.push(ws);
       return ws;
     },
+    reload(loaded) {
+      registry.reload(loaded);
+    },
     async shutdown() {
       app.ready = false;
+      clearInterval(sweep);
       for (const s of sockets) s.drain();
       await registry.flush();
       registry.close();
       for (const s of sockets) s.close();
     },
   };
+  // Remove stale ad-hoc rooms from storage now and then every hour.
+  void registry.sweep();
+  const sweep = setInterval(() => void registry.sweep(), 3600_000);
+  sweep.unref();
   metrics.gauge('colo_ws_open_connections', 'Open WebSocket connections', () => sockets.reduce((n, s) => n + s.connections, 0));
   return app;
 }

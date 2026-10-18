@@ -4,6 +4,7 @@
 import type { Connect, Plugin } from 'vite';
 import { createServerApp, type ServerApp } from './app.ts';
 import { loadConfig } from './config/load.ts';
+import { watchConfig } from './config/watch.ts';
 import { createLogger } from './log.ts';
 
 function middleware(app: ServerApp): Connect.NextHandleFunction {
@@ -19,12 +20,16 @@ function middleware(app: ServerApp): Connect.NextHandleFunction {
 
 export function colocationServerPlugin(): Plugin {
   let app: ServerApp | null = null;
+  let stopWatching = () => {};
   const create = (info: (m: string) => void) => {
     // COLO_CONFIG points at a YAML file; without it the built-in defaults are used.
-    const loaded = loadConfig(process.env.COLO_CONFIG || null, process.env);
+    const path = process.env.COLO_CONFIG || null;
+    const loaded = loadConfig(path, process.env);
     const log = createLogger((process.env.LOG_LEVEL as 'info') ?? 'info', 'pretty', (line) => info(line));
-    app = createServerApp({ loaded, log, env: process.env, staticDir: null });
-    return app;
+    const created = createServerApp({ loaded, log, env: process.env, staticDir: null });
+    if (path) stopWatching = watchConfig(path, process.env, log, (next) => created.reload(next));
+    app = created;
+    return created;
   };
   return {
     name: 'colocation-server',
@@ -33,7 +38,10 @@ export function colocationServerPlugin(): Plugin {
       server.middlewares.use(middleware(a));
       if (server.httpServer) {
         a.attach(server.httpServer);
-        server.httpServer.on('close', () => void a.shutdown());
+        server.httpServer.on('close', () => {
+          stopWatching();
+          void a.shutdown();
+        });
       }
     },
     configurePreviewServer(server) {

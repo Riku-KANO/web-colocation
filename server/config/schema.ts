@@ -178,6 +178,8 @@ export const AppConfigSchema = z.strictObject({
       trustForwardedFor: z.boolean().default(false),
       /** Allow the `?server=` URL parameter to point the client at another sync server. */
       allowServerOverride: z.boolean().default(false),
+      /** Content-Security-Policy for the app page. Start with report-only, then enforce. */
+      csp: z.enum(['off', 'report-only', 'enforce']).default('report-only'),
     })
     .prefault({}),
   auth: z

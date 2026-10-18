@@ -11,6 +11,7 @@ import https from 'node:https';
 import { createServerApp } from './app.ts';
 import { isLoopbackHost } from './auth.ts';
 import { loadConfig, runtimeFromEnv } from './config/load.ts';
+import { watchConfig } from './config/watch.ts';
 import { createFileStore } from './fileStore.ts';
 import type { Handler } from './http/handler.ts';
 import { createLogger } from './log.ts';
@@ -70,6 +71,10 @@ server.listen(runtime.port, runtime.host, () => {
   });
 });
 
+const stopWatching = runtime.configPath
+  ? watchConfig(runtime.configPath, process.env, log, (next) => app.reload(next))
+  : () => {};
+
 const health = runtime.healthPort !== null ? http.createServer(serve(app.healthHandler)) : null;
 health?.listen(runtime.healthPort!, '0.0.0.0', () => log.info('health endpoints listening', { port: runtime.healthPort }));
 
@@ -80,6 +85,7 @@ async function stop(signal: string) {
   log.info('shutting down', { signal });
   const force = setTimeout(() => process.exit(1), 20_000);
   force.unref();
+  stopWatching();
   await app.shutdown();
   server.close();
   health?.close();

@@ -115,6 +115,9 @@ export function attachColocationServer(
         }
         ws.send(data);
       },
+      close(code: number, reason: string) {
+        ws.close(code, reason);
+      },
     };
     const fail = (msg: Extract<ServerMsg, { t: 'error' }>) => {
       metrics.inc('colo_join_errors_total', 'Failed joins by reason', { code: msg.code });

@@ -92,7 +92,7 @@ export class RoomRegistry {
     const auth = this.config.auth;
     if (auth.mode === 'trusted-headers' && !identity) return { error: 'unauthenticated' };
     const admin = isAdmin(identity, auth);
-    const configuredHost = admin || (!!identity?.email && !!def?.hosts.some((h) => h.toLowerCase() === identity.email));
+    const configuredHost = this.isConfiguredHost(identity, def);
     if (!admin && !isAllowed(identity, def?.access)) return { error: 'forbidden' };
 
     // Load the room first: host-set passcodes live in its stored settings.
@@ -119,7 +119,7 @@ export class RoomRegistry {
     }
     const fromIdentity = identity && !auth.allowDisplayNameOverride;
     const name = fromIdentity ? identity.name : hello.name.trim() || identity?.name || '';
-    const info = room.join(peerId, conn, { hello, name, verified: !!identity, configuredHost });
+    const info = room.join(peerId, conn, { hello, name, verified: !!identity, configuredHost, identity });
     this.cancelDispose(roomId);
     this.sendIce(room, peerId);
     return { room, info };
@@ -131,6 +131,47 @@ export class RoomRegistry {
     if (t) clearTimeout(t);
     this.iceTimers.delete(peerId);
     this.scheduleDispose(room);
+  }
+
+  /**
+   * Apply a new configuration (ConfigMap update). Running rooms get the new layout when it
+   * changed, and participants who lost access are removed.
+   */
+  reload(loaded: LoadedConfig): void {
+    this.loaded = loaded;
+    for (const room of [...this.rooms.values()]) {
+      const def = this.definition(room.id);
+      if (!def && !this.config.rooms.allowAdhoc) {
+        for (const m of room.members()) room.kick(m.id, 'not-found');
+        continue;
+      }
+      for (const m of room.members()) {
+        if (!isAdmin(m.identity, this.config.auth) && !isAllowed(m.identity, def?.access)) room.kick(m.id, 'forbidden');
+      }
+      room.refreshRoles(def?.hosts.length ? 'configured' : 'first-joiner', (identity) => this.isConfiguredHost(identity, def));
+      const next = this.roomConfig(room.id, def);
+      if (JSON.stringify(next) !== JSON.stringify(room.config)) room.reconfigure(next);
+    }
+    this.log.info('configuration reloaded', { source: loaded.source, rooms: this.rooms.size });
+  }
+
+  /** Delete stored state of ad-hoc rooms nobody used for `rooms.adhocTtlHours`. */
+  async sweep(now = Date.now()): Promise<number> {
+    const cutoff = now - this.config.rooms.adhocTtlHours * 3600_000;
+    let removed = 0;
+    try {
+      for (const r of await this.store.list()) {
+        if (r.adhoc && r.updatedAt < cutoff && !this.rooms.has(r.roomId) && !this.definition(r.roomId)) {
+          await this.store.delete(r.roomId);
+          this.settings.delete(r.roomId);
+          removed++;
+        }
+      }
+    } catch (e) {
+      this.log.error('sweep failed', { error: String(e) });
+    }
+    if (removed) this.log.info('removed stale ad-hoc rooms', { count: removed });
+    return removed;
   }
 
   /** Rooms shown in the lobby for this user. */
@@ -187,6 +228,12 @@ export class RoomRegistry {
   }
 
   // ---- internals ----
+
+  private isConfiguredHost(identity: Identity | null, def: RoomDefinition | undefined): boolean {
+    if (isAdmin(identity, this.config.auth)) return true;
+    const email = identity?.email;
+    return !!email && !!def?.hosts.some((h) => h.toLowerCase() === email);
+  }
 
   private getOrCreate(roomId: string, def: RoomDefinition | undefined): Promise<Room | ErrorCode> {
     const existing = this.rooms.get(roomId);
