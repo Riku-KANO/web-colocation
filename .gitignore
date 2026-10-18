@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+data/
+*.log
+.DS_Store
+.env
+.env.*
+# Local tooling (Claude Code launch configs etc.)
+.claude/
