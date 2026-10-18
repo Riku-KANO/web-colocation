@@ -1,6 +1,8 @@
-// サーバー側で受信メッセージを検証する。信頼できない入力なので、形と大きさを厳しく見る。
+// Validates incoming client messages on the server. Input is untrusted, so shapes and sizes
+// are checked strictly and a normalized copy is returned.
 
 import type { AvatarPose, ClientMsg, DeviceKind, Pose, RtcIceCandidate, VoiceState } from './protocol.ts';
+import type { PermissionLevel, RoomSettingsPatch } from './roomConfig.ts';
 
 export const LIMITS = {
   idLength: 64,
@@ -11,12 +13,16 @@ export const LIMITS = {
   /** 1 ストロークあたりの座標数。 */
   ptsPerStroke: 20000,
   strokesPerRoom: 5000,
+  /** Total stroke coordinates kept per room (keeps snapshots and stored state bounded). */
+  ptsPerRoom: 600_000,
   /** 共有座標系で許容する座標の絶対値 (メートル)。 */
   coord: 1000,
   /** WebRTC の SDP (音声 1 本なら数 KB)。 */
   sdpLength: 16 * 1024,
   /** ICE 候補の candidate 行 (通常 100〜200 文字)。 */
   iceLength: 1024,
+  passcodeLength: 128,
+  titleLength: 80,
 } as const;
 
 const DEVICES: readonly DeviceKind[] = ['desktop', 'ar', 'vr'];
@@ -80,6 +86,67 @@ function uvPoints(v: unknown): number[] | null {
   return v as number[];
 }
 
+/** Room epoch carried by state-changing messages. */
+function epoch(v: unknown): number | null {
+  return Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : null;
+}
+
+const PERMISSIONS: readonly PermissionLevel[] = ['everyone', 'hosts'];
+
+function permission(v: unknown): PermissionLevel | null | undefined {
+  if (v === undefined) return undefined;
+  return PERMISSIONS.includes(v as PermissionLevel) ? (v as PermissionLevel) : null;
+}
+
+/** Host settings patch. Unknown keys are dropped; invalid values reject the whole message. */
+function settingsPatch(v: unknown): RoomSettingsPatch | null {
+  if (!isObj(v)) return null;
+  const out: RoomSettingsPatch = {};
+  if (v.title !== undefined) {
+    const title = str(v.title, LIMITS.titleLength);
+    if (title === null || !title.trim()) return null;
+    out.title = title.trim();
+  }
+  if (v.template !== undefined) {
+    const template = id(v.template);
+    if (!template) return null;
+    out.template = template;
+  }
+  if (v.passcode !== undefined) {
+    if (v.passcode === null) out.passcode = null;
+    else {
+      const pc = str(v.passcode, LIMITS.passcodeLength);
+      if (!pc) return null;
+      out.passcode = pc;
+    }
+  }
+  if (v.rules !== undefined) {
+    if (!isObj(v.rules)) return null;
+    const r = v.rules;
+    const rules: NonNullable<RoomSettingsPatch['rules']> = {};
+    if (r.maxParticipants !== undefined) {
+      if (!Number.isInteger(r.maxParticipants) || (r.maxParticipants as number) < 1 || (r.maxParticipants as number) > 256) return null;
+      rules.maxParticipants = r.maxParticipants as number;
+    }
+    if (r.voice !== undefined) {
+      if (!isObj(r.voice) || (r.voice.enabled !== undefined && typeof r.voice.enabled !== 'boolean')) return null;
+      rules.voice = r.voice.enabled === undefined ? {} : { enabled: r.voice.enabled as boolean };
+    }
+    if (r.permissions !== undefined) {
+      if (!isObj(r.permissions)) return null;
+      const perms: NonNullable<NonNullable<RoomSettingsPatch['rules']>['permissions']> = {};
+      for (const key of ['clearBoard', 'resetObjects', 'editSettings'] as const) {
+        const level = permission(r.permissions[key]);
+        if (level === null) return null;
+        if (level !== undefined) perms[key] = level;
+      }
+      rules.permissions = perms;
+    }
+    out.rules = rules;
+  }
+  return out;
+}
+
 function device(v: unknown): DeviceKind | null {
   return DEVICES.includes(v as DeviceKind) ? (v as DeviceKind) : null;
 }
@@ -120,8 +187,21 @@ export function parseClientMsg(raw: unknown): ClientMsg | null {
       const d = device(raw.device);
       const space = str(raw.space, LIMITS.roomLength);
       const vs = raw.voice === undefined ? 'off' : voice(raw.voice);
-      if (typeof raw.v !== 'number' || !room || name === null || !c || !d || space === null || !vs) return null;
-      return { t: 'hello', v: raw.v, room, name, color: c, device: d, space, voice: vs };
+      const passcode = raw.passcode === undefined ? undefined : str(raw.passcode, LIMITS.passcodeLength);
+      if (typeof raw.v !== 'number' || !room || name === null || !c || !d || space === null || !vs || passcode === null) {
+        return null;
+      }
+      return {
+        t: 'hello',
+        v: raw.v,
+        room,
+        name,
+        color: c,
+        device: d,
+        space,
+        voice: vs,
+        ...(passcode !== undefined ? { passcode } : {}),
+      };
     }
     case 'profile': {
       const d = device(raw.device);
@@ -134,43 +214,56 @@ export function parseClientMsg(raw: unknown): ClientMsg | null {
       return pose ? { t: 'pose', pose } : null;
     }
     case 'grab': {
+      const e = epoch(raw.e);
       const i = id(raw.id);
-      return i ? { t: 'grab', id: i } : null;
+      return i && e !== null ? { t: 'grab', e, id: i } : null;
     }
     case 'move':
     case 'release': {
+      const e = epoch(raw.e);
       const i = id(raw.id);
       const pose = parsePose(raw.pose);
-      if (!i || !pose) return null;
-      return { t: raw.t, id: i, pose };
+      if (!i || !pose || e === null) return null;
+      return { t: raw.t, e, id: i, pose };
     }
     case 'stroke': {
+      const e = epoch(raw.e);
       const i = id(raw.id);
       const board = id(raw.board);
       const c = color(raw.color);
       const pts = uvPoints(raw.pts);
-      if (!i || !board || !c || !pts || !num(raw.width, 0.1) || raw.width <= 0) return null;
-      return { t: 'stroke', id: i, board, color: c, width: raw.width, pts };
+      if (e === null || !i || !board || !c || !pts || !num(raw.width, 0.1) || raw.width <= 0) return null;
+      return { t: 'stroke', e, id: i, board, color: c, width: raw.width, pts };
     }
     case 'stroke-pts': {
+      const e = epoch(raw.e);
       const i = id(raw.id);
       const pts = uvPoints(raw.pts);
-      return i && pts ? { t: 'stroke-pts', id: i, pts } : null;
+      return e !== null && i && pts ? { t: 'stroke-pts', e, id: i, pts } : null;
     }
     case 'stroke-end': {
+      const e = epoch(raw.e);
       const i = id(raw.id);
-      return i ? { t: 'stroke-end', id: i } : null;
+      return e !== null && i ? { t: 'stroke-end', e, id: i } : null;
     }
     case 'board-clear': {
+      const e = epoch(raw.e);
       const board = id(raw.board);
-      return board ? { t: 'board-clear', board } : null;
+      return e !== null && board ? { t: 'board-clear', e, board } : null;
+    }
+    case 'room-settings': {
+      const e = epoch(raw.e);
+      const settings = settingsPatch(raw.settings);
+      return e !== null && settings ? { t: 'room-settings', e, settings } : null;
     }
     case 'voice': {
       const state = voice(raw.state);
       return state ? { t: 'voice', state } : null;
     }
-    case 'reset-objects':
-      return { t: 'reset-objects' };
+    case 'reset-objects': {
+      const e = epoch(raw.e);
+      return e !== null ? { t: 'reset-objects', e } : null;
+    }
     case 'rtc-offer':
     case 'rtc-answer': {
       const to = id(raw.to);

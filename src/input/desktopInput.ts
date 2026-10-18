@@ -4,9 +4,9 @@
 
 import { Plane, Quaternion, Raycaster, Vector2, Vector3, type Object3D, type PerspectiveCamera } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { Seat } from '../../shared/protocol.ts';
+import { seatForward, type AnchorSpec, type SeatSpec } from '../../shared/roomConfig.ts';
+import type { BoardManager } from '../board/boardManager.ts';
 import type { StrokeHandle, StrokeWriter } from '../board/strokeWriter.ts';
-import type { Whiteboard } from '../board/whiteboard.ts';
 import type { ObjectManager } from '../sync/objects.ts';
 import { pointWorldToShared } from '../util/pose.ts';
 
@@ -19,10 +19,10 @@ export interface DesktopInputDeps {
   camera: PerspectiveCamera;
   sharedRoot: Object3D;
   objects: ObjectManager;
-  board: Whiteboard;
+  boards: BoardManager;
   strokes: StrokeWriter;
   inkColor(): string;
-  onBoardClear(): void;
+  onBoardClear(boardId: string): void;
 }
 
 interface Drag {
@@ -64,12 +64,13 @@ export class DesktopInput {
   }
 
   /** 自分の席からテーブルを見下ろす視点にする。 */
-  placeCamera(seat: Seat): void {
+  /** Look from slightly behind and above the seat, in the direction the seat faces. */
+  placeCamera(seat: SeatSpec, anchor: AnchorSpec): void {
     const { sharedRoot, camera } = this.deps;
     sharedRoot.updateMatrixWorld(true);
-    // 席の少し後ろ・上から、向かいの人とボードが入るように見る
-    const eye = sharedRoot.localToWorld(new Vector3(seat.x * 1.7, 0.75, seat.z * 1.7));
-    const target = sharedRoot.localToWorld(new Vector3(0.25, 0.2, 0));
+    const [fx, fz] = seatForward(seat.yaw);
+    const eye = sharedRoot.localToWorld(new Vector3(seat.x - fx * 0.55, 1.45 - anchor.floorOffset, seat.z - fz * 0.55));
+    const target = sharedRoot.localToWorld(new Vector3(seat.x + fx * 1.3, 0.85 - anchor.floorOffset, seat.z + fz * 1.3));
     camera.position.copy(eye);
     this.controls.target.copy(target);
     camera.lookAt(target);
@@ -99,18 +100,19 @@ export class DesktopInput {
 
   private onDown = (e: PointerEvent) => {
     if (!this.enabled || e.button !== 0 || this.drag || this.stroke) return;
-    const { objects, board } = this.deps;
+    const { objects, boards } = this.deps;
     this.deps.sharedRoot.updateMatrixWorld(true);
-    const hit = this.pick(e, [board.clearButton, board.surface, ...objects.pickables()]);
+    const hit = this.pick(e, [...boards.clearButtons(), ...boards.surfaces(), ...objects.pickables()]);
     if (!hit) return;
 
-    if (hit.object === board.clearButton) {
-      this.deps.onBoardClear();
+    const board = boards.boardOf(hit.object);
+    if (board && hit.object === board.clearButton) {
+      this.deps.onBoardClear(board.id);
       this.suppressOrbit(e);
       return;
     }
-    if (hit.object === board.surface && hit.uv) {
-      const handle = this.deps.strokes.begin(this.deps.inkColor(), INK_WIDTH, hit.uv.x, hit.uv.y);
+    if (board && hit.object === board.surface && hit.uv) {
+      const handle = this.deps.strokes.begin(board.id, this.deps.inkColor(), INK_WIDTH, hit.uv.x, hit.uv.y);
       if (!handle) return;
       this.stroke = { handle, pointerId: e.pointerId };
       this.setCursor(hit.point);
@@ -132,7 +134,7 @@ export class DesktopInput {
   };
 
   private onMove = (e: PointerEvent) => {
-    const { objects, board, sharedRoot } = this.deps;
+    const { objects, boards, sharedRoot } = this.deps;
     if (this.drag && e.pointerId === this.drag.pointerId) {
       const o = objects.get(this.drag.id);
       if (!o || !objects.isLocallyHeld(this.drag.id)) {
@@ -150,7 +152,8 @@ export class DesktopInput {
       return;
     }
     if (this.stroke && e.pointerId === this.stroke.pointerId) {
-      const hit = this.pick(e, [board.surface]);
+      const surface = boards.get(this.stroke.handle.boardId)?.surface;
+      const hit = surface ? this.pick(e, [surface]) : null;
       if (hit?.uv) {
         this.stroke.handle.add(hit.uv.x, hit.uv.y);
         this.setCursor(hit.point);
@@ -158,12 +161,12 @@ export class DesktopInput {
       return;
     }
     if (this.enabled && e.pointerType === 'mouse') {
-      const hit = this.pick(e, [board.clearButton, board.surface, ...objects.pickables()]);
+      const hit = this.pick(e, [...boards.clearButtons(), ...boards.surfaces(), ...objects.pickables()]);
       this.deps.canvas.style.cursor = !hit
         ? ''
-        : hit.object === board.surface
+        : hit.object.userData.boardSurface
           ? 'crosshair'
-          : hit.object === board.clearButton
+          : hit.object.userData.action === 'board-clear'
             ? 'pointer'
             : 'grab';
     }

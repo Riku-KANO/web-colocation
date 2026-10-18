@@ -1,4 +1,4 @@
-// アプリ本体: シーン構築、ネットワークとの橋渡し、XR セッションとキャリブレーションの状態管理。
+// The application: scene, network bridge, XR session and calibration state.
 
 import {
   AudioListener,
@@ -10,9 +10,12 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
-import { seatAt, type AvatarPose, type DeviceKind, type PeerInfo, type Pose, type ServerMsg } from '../shared/protocol.ts';
+import type { ClientConfig } from '../shared/clientConfig.ts';
+import type { AvatarPose, DeviceKind, ErrorCode, PeerInfo, Pose, RoomSnapshot, ServerMsg } from '../shared/protocol.ts';
+import type { RoomConfig, SeatSpec } from '../shared/roomConfig.ts';
+import { BoardManager } from './board/boardManager.ts';
 import { StrokeWriter } from './board/strokeWriter.ts';
-import { Whiteboard } from './board/whiteboard.ts';
+import { t } from './i18n/index.ts';
 import { DesktopInput } from './input/desktopInput.ts';
 import { XRInput } from './input/xrInput.ts';
 import { NetClient, defaultServerUrl, type ConnState } from './net/netClient.ts';
@@ -45,7 +48,7 @@ export class App {
   readonly env: Environment;
   readonly objects: ObjectManager;
   readonly avatars = new AvatarManager();
-  readonly board = new Whiteboard();
+  readonly boards = new BoardManager(t('board.clear'));
   readonly strokes: StrokeWriter;
   readonly panel = new XRPanel();
   readonly net: NetClient;
@@ -57,7 +60,10 @@ export class App {
   hud!: Hud;
 
   self: PeerInfo | null = null;
+  /** Configuration of the room we are in (null until `welcome`). */
+  room: RoomConfig | null = null;
   readonly peers = new Map<string, PeerInfo>();
+  readonly client: ClientConfig;
   ink = INKS[0];
   device: DeviceKind = 'desktop';
 
@@ -74,8 +80,9 @@ export class App {
   private lastSpeakingUi = 0;
   private speakingNames: string[] = [];
 
-  constructor(opts: JoinOptions) {
+  constructor(opts: JoinOptions, client: ClientConfig) {
     this.opts = opts;
+    this.client = client;
     this.renderer = new WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setSize(innerWidth, innerHeight);
@@ -86,15 +93,17 @@ export class App {
     this.env.setMode('desktop');
     this.scene.add(this.frame.root);
 
-    this.net = new NetClient(defaultServerUrl(), {
+    this.net = new NetClient(defaultServerUrl(client.allowServerOverride), {
       room: opts.room,
       name: opts.name,
       color: opts.color,
       device: 'desktop',
       space: opts.space,
       voice: 'off',
+      ...storedPasscode(opts.room),
     });
     const send = this.net.send.bind(this.net);
+    const sendState = this.net.sendState.bind(this.net);
 
     this.voice = new VoiceChat({
       send,
@@ -108,39 +117,38 @@ export class App {
     });
 
     this.objects = new ObjectManager({
-      send,
+      send: sendState,
       selfId: () => this.self?.id ?? null,
       isPeerPresent: (id) => this.peers.has(id),
       peerColor: (id) => this.peers.get(id)?.color ?? null,
     });
-    this.strokes = new StrokeWriter(this.board, send, () => this.self?.id ?? null);
-    this.frame.root.add(this.env.table, this.board.root, this.objects.root, this.avatars.root);
+    this.strokes = new StrokeWriter(this.boards, sendState, () => this.self?.id ?? null);
+    this.frame.root.add(this.env.table, this.boards.root, this.objects.root, this.avatars.root);
 
     this.desktop = new DesktopInput({
       canvas: this.renderer.domElement,
       camera: this.camera,
       sharedRoot: this.frame.root,
       objects: this.objects,
-      board: this.board,
+      boards: this.boards,
       strokes: this.strokes,
       inkColor: () => this.ink,
-      onBoardClear: () => this.clearBoard(),
+      onBoardClear: (id) => this.clearBoard(id),
     });
-    this.desktop.placeCamera(seatAt(0));
 
     this.xr = new XRInput({
       renderer: this.renderer,
       scene: this.scene,
       sharedRoot: this.frame.root,
       objects: this.objects,
-      board: this.board,
+      boards: this.boards,
       strokes: this.strokes,
       panel: this.panel,
       inkColor: () => this.self?.color ?? this.ink,
       isCalibrating: () => this.calibration !== null,
       onCalibrationPoint: (p) => this.onCalibrationPoint(p),
       onPanelButton: (id) => this.onPanelButton(id),
-      onBoardClear: () => this.clearBoard(),
+      onBoardClear: (id) => this.clearBoard(id),
     });
 
     addEventListener('resize', () => {
@@ -156,8 +164,8 @@ export class App {
       {
         enterAR: () => void this.enterXR('immersive-ar'),
         enterVR: () => void this.enterXR('immersive-vr'),
-        resetObjects: () => this.net.send({ t: 'reset-objects' }),
-        clearBoard: () => this.clearBoard(),
+        resetObjects: () => this.net.sendState({ t: 'reset-objects' }),
+        clearBoard: () => this.clearAllBoards(),
         setInk: (c) => (this.ink = c),
         voice: () => this.toggleVoice(),
         voiceLeave: () => this.voice.leave(),
@@ -167,6 +175,8 @@ export class App {
     );
     this.net.onState = (s) => this.onConnState(s);
     this.net.onMessage = (m) => this.onMessage(m);
+    this.net.onFatal = (code, message) => this.onFatal(code, message);
+    this.net.onAuthExpired = () => location.reload();
     this.net.connect();
     this.renderer.setAnimationLoop((t, frame) => {
       // three.js はループ内で例外が出ると次のフレームを要求しなくなる (XR では画面が固まる) ので必ず捕まえる
@@ -178,9 +188,31 @@ export class App {
     });
   }
 
-  clearBoard(): void {
-    this.board.clear();
-    this.net.send({ t: 'board-clear', board: this.board.id });
+  clearBoard(boardId: string): void {
+    if (!this.can('clearBoard')) return void this.hud.toast(t('error.not-allowed'));
+    this.boards.clear(boardId);
+    this.net.sendState({ t: 'board-clear', board: boardId });
+  }
+
+  clearAllBoards(): void {
+    for (const b of this.boards.all()) this.clearBoard(b.id);
+  }
+
+  /** Whether the local user may perform an action under the room's rules. */
+  can(action: keyof RoomConfig['rules']['permissions']): boolean {
+    const level = this.room?.rules.permissions[action] ?? 'everyone';
+    return level === 'everyone' || this.self?.role === 'host';
+  }
+
+  /** The seat spec for a seat index (wraps around if a room shrank). */
+  seatOf(index: number | undefined): SeatSpec {
+    const seats = this.room?.seats ?? [{ x: 0, z: 0.75, yaw: 0 }];
+    const i = index ?? 0;
+    return seats[((i % seats.length) + seats.length) % seats.length];
+  }
+
+  private get anchor() {
+    return this.room?.anchor ?? { kind: 'table' as const, floorOffset: 0.72 };
   }
 
   // ---- 音声 ----
@@ -219,23 +251,21 @@ export class App {
   private onMessage(m: ServerMsg): void {
     switch (m.t) {
       case 'welcome':
-        this.self = m.self;
-        this.peers.clear();
-        for (const p of m.snapshot.peers) this.peers.set(p.id, p);
-        this.objects.load(m.snapshot.objects);
-        this.board.load(m.snapshot.strokes);
-        this.avatars.reset(m.snapshot.peers, m.snapshot.poses, m.self.id);
-        this.avatars.setSelf(m.self.space, this.device);
-        this.voice.mesh.sync(m.self.id, this.peers.values());
-        if (!this.renderer.xr.isPresenting) this.desktop.placeCamera(seatAt(m.self.seat));
-        else this.xr.placeWorldPanel(seatAt(m.self.seat));
+        this.applyRoom(m.config, m.self, m.snapshot, false);
+        break;
+      case 'config':
+        this.applyRoom(m.config, m.self, m.snapshot, true);
+        break;
+      case 'ice':
+        this.voice.mesh.setIceServers(m.iceServers);
         break;
       case 'peer-join':
       case 'peer-update':
         this.peers.set(m.peer.id, m.peer);
-        if (m.peer.id !== this.self?.id) this.avatars.upsert(m.peer);
+        if (m.peer.id === this.self?.id) this.self = m.peer; // e.g. promoted to host
+        else this.avatars.upsert(m.peer);
         this.voice.mesh.sync(this.self?.id ?? null, this.peers.values());
-        if (m.t === 'peer-join') this.hud.toast(`${m.peer.name} さんが参加しました`);
+        if (m.t === 'peer-join') this.hud.toast(t('toast.joined', { name: m.peer.name }));
         break;
       case 'peer-leave': {
         const p = this.peers.get(m.id);
@@ -243,7 +273,7 @@ export class App {
         this.avatars.remove(m.id);
         this.voice.mesh.sync(this.self?.id ?? null, this.peers.values());
         this.objects.refreshHighlights();
-        if (p) this.hud.toast(`${p.name} さんが退出しました`);
+        if (p) this.hud.toast(t('toast.left', { name: p.name }));
         break;
       }
       case 'pose':
@@ -262,16 +292,16 @@ export class App {
         this.objects.load(m.objects);
         break;
       case 'stroke':
-        this.board.addStroke(m.stroke);
+        this.boards.addStroke(m.stroke);
         break;
       case 'stroke-pts':
-        this.board.appendPoints(m.id, m.pts);
+        this.boards.appendPoints(m.id, m.pts);
         break;
       case 'stroke-end':
-        this.board.endStroke(m.id);
+        this.boards.endStroke(m.id);
         break;
       case 'board-clear':
-        if (m.board === this.board.id) this.board.clear();
+        this.boards.clear(m.board);
         break;
       case 'rtc-offer':
       case 'rtc-answer':
@@ -279,12 +309,69 @@ export class App {
         this.voice.mesh.handleSignal(m);
         break;
       case 'error':
-        this.hud.toast(m.message);
+        // Fatal errors are handled by onFatal (the client stops reconnecting).
+        this.hud.toast(t(`error.${m.code}`));
         break;
       case 'pong':
         break;
     }
     if (m.t !== 'pose' && m.t !== 'move' && m.t !== 'stroke-pts' && m.t !== 'rtc-ice') this.refreshHud();
+  }
+
+  /** Build (or rebuild) the scene for a room configuration and load the snapshot. */
+  private applyRoom(config: RoomConfig, self: PeerInfo, snapshot: RoomSnapshot, reconfigured: boolean): void {
+    const previous = this.room;
+    this.room = config;
+    this.self = self;
+    this.peers.clear();
+    for (const p of snapshot.peers) this.peers.set(p.id, p);
+    if (reconfigured) {
+      // Everything in flight refers to the old layout.
+      this.strokes.abortAll();
+      this.desktop.cancel();
+      this.xr.releaseAll();
+    }
+    this.env.applyConfig(config);
+    if (!previous || reconfigured) this.boards.build(config.boards);
+    this.boards.load(snapshot.strokes);
+    this.objects.load(snapshot.objects);
+    this.avatars.setRoom(config.seats, config.anchor);
+    this.avatars.reset(snapshot.peers, snapshot.poses, self.id);
+    this.avatars.setSelf(self.space, this.device);
+    this.voice.mesh.sync(self.id, this.peers.values());
+    const seat = this.seatOf(self.seat);
+    if (!this.renderer.xr.isPresenting) {
+      this.frame.set(desktopFrame(config.anchor), 'desktop');
+      this.desktop.placeCamera(seat, config.anchor);
+    } else {
+      this.xr.placeWorldPanel(seat, config.anchor);
+      // Keep a calibration whose origin still means the same thing; otherwise place again.
+      const anchorChanged = previous && previous.anchor.kind !== config.anchor.kind;
+      if (reconfigured && (anchorChanged || this.frame.kind === 'auto')) this.needsAutoPlace = true;
+      else if (reconfigured) this.hud.toast(t('toast.replace'));
+    }
+    if (reconfigured && !this.renderer.xr.isPresenting) this.hud.toast(t('toast.roomChanged'));
+  }
+
+  private onFatal(code: ErrorCode, _message?: string): void {
+    if (code === 'passcode-required' || code === 'passcode-invalid') {
+      if (code === 'passcode-invalid') this.hud.toast(t('error.passcode-invalid'));
+      const pass = window.prompt(t('passcode.prompt', { room: this.opts.room }));
+      if (pass) {
+        try {
+          sessionStorage.setItem(`colo.passcode.${this.opts.room}`, pass);
+        } catch {
+          // ignore
+        }
+        this.net.retryWithPasscode(pass);
+      }
+      return;
+    }
+    if (code === 'unauthenticated') {
+      location.reload();
+      return;
+    }
+    this.hud.toast(t(`error.${code}`));
   }
 
   private refreshHud(): void {
@@ -314,24 +401,24 @@ export class App {
       this.env.setMode(this.device);
       this.desktop.enabled = false;
       this.needsAutoPlace = true;
-      this.xr.placeWorldPanel(seatAt(this.self?.seat ?? 0));
+      this.xr.placeWorldPanel(this.seatOf(this.self?.seat), this.anchor);
       this.xr.reattachPanel();
       this.hud.setPresenting(true);
       session.addEventListener('end', () => this.onXREnd());
     } catch (e) {
       console.error(e);
-      this.hud.toast(`XR を開始できませんでした: ${(e as Error).message}`);
+      this.hud.toast(t('toast.xrFailed', { message: (e as Error).message }));
     }
   }
 
   private onXREnd(): void {
     this.xr.releaseAll();
     this.calibration = null;
-    this.frame.set(desktopFrame(), 'desktop');
+    this.frame.set(desktopFrame(this.anchor), 'desktop');
     this.setDevice('desktop');
     this.env.setMode('desktop');
     this.desktop.enabled = true;
-    this.desktop.placeCamera(seatAt(this.self?.seat ?? 0));
+    this.desktop.placeCamera(this.seatOf(this.self?.seat), this.anchor);
     this.hasHead = false;
     this.hud.setPresenting(false);
   }
@@ -357,10 +444,10 @@ export class App {
         this.needsAutoPlace = true;
         break;
       case 'reset':
-        this.net.send({ t: 'reset-objects' });
+        this.net.sendState({ t: 'reset-objects' });
         break;
       case 'clear':
-        this.clearBoard();
+        this.clearAllBoards();
         break;
       case 'table':
         this.env.setTableVisible(!this.env.tableVisible);
@@ -377,16 +464,16 @@ export class App {
   private onCalibrationPoint(p: Vector3): void {
     const c = this.calibration;
     if (!c) return;
-    const seat = seatAt(this.self?.seat ?? 0);
+    const seat = this.seatOf(this.self?.seat);
     if (c.kind === 'one-point') {
       const headPos = new Vector3().setFromMatrixPosition(this.head);
-      this.frame.set(frameFromOnePoint(p, headPos, seat), 'one-point', true);
+      this.frame.set(frameFromOnePoint(p, headPos, seat, this.anchor), 'one-point', true);
       this.calibration = null;
     } else if (!c.a) {
       c.a = p.clone();
     } else {
       if (c.a.distanceTo(p) < 0.1) {
-        this.hud.toast('2 点が近すぎます (10cm 以上離してください)');
+        this.hud.toast(t('toast.pointsTooClose'));
         return;
       }
       this.frame.set(frameFromTwoPoints(c.a, p), 'two-point', true);
@@ -462,7 +549,7 @@ export class App {
           const hp = new Vector3();
           const hq = new Quaternion();
           this.head.decompose(hp, hq, new Vector3());
-          this.frame.set(frameInFrontOfViewer(hp, hq, seatAt(this.self?.seat ?? 0)), 'auto', true);
+          this.frame.set(frameInFrontOfViewer(hp, hq, this.seatOf(this.self?.seat), this.anchor), 'auto', true);
         }
       }
       this.frame.update(xrFrame, ref);
@@ -478,7 +565,7 @@ export class App {
     this.voice.update(dt);
     this.updateSpeaking(now);
     this.strokes.update(now);
-    this.board.update(now);
+    this.boards.update(now);
     this.sendPose(now, presenting);
     this.renderer.render(this.scene, this.camera);
   }
@@ -524,7 +611,8 @@ export class App {
         held: o.localHold,
         p: o.root.position.toArray().map((x) => Math.round(x * 1000) / 1000),
       })),
-      strokes: this.board.strokeCount,
+      strokes: this.boards.strokeCount,
+      room: this.room ? { id: this.room.id, template: this.room.template, epoch: this.net.epoch, role: this.self?.role } : null,
       voice: {
         state: this.voice.state,
         mic: this.voice.hasMic,
@@ -535,5 +623,15 @@ export class App {
         ),
       },
     };
+  }
+}
+
+/** A passcode entered earlier in this tab, so reconnects (e.g. after a server restart) still work. */
+function storedPasscode(room: string): { passcode?: string } {
+  try {
+    const p = sessionStorage.getItem(`colo.passcode.${room}`);
+    return p ? { passcode: p } : {};
+  } catch {
+    return {};
   }
 }

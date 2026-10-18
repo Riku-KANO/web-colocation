@@ -4,7 +4,7 @@
 
 import type { VoiceState } from '../../shared/protocol.ts';
 import { LevelMeter } from './level.ts';
-import { DEFAULT_ICE_SERVERS, VoiceMesh, type VoiceMeshDeps } from './mesh.ts';
+import { VoiceMesh, type VoiceMeshDeps } from './mesh.ts';
 
 export interface VoiceChatDeps extends Omit<VoiceMeshDeps, 'iceServers' | 'createPeerConnection'> {
   /** 自分の参加状態が変わった (サーバーへ知らせる・表示を更新する)。 */
@@ -31,7 +31,8 @@ export class VoiceChat {
 
   constructor(deps: VoiceChatDeps) {
     this.deps = deps;
-    this.mesh = new VoiceMesh({ ...deps, iceServers: iceServersFromEnv() });
+    // ICE servers (STUN + short-lived TURN credentials) arrive from the server after joining.
+    this.mesh = new VoiceMesh({ ...deps });
   }
 
   get hasMic(): boolean {
@@ -173,18 +174,4 @@ export class VoiceChat {
       },
     };
   }
-}
-
-/** TURN を使う場合はビルド時に `VITE_ICE_SERVERS='[{"urls":"turn:…","username":"…","credential":"…"}]'` を渡す。 */
-function iceServersFromEnv(): RTCIceServer[] {
-  const raw = import.meta.env.VITE_ICE_SERVERS as string | undefined;
-  if (!raw) return DEFAULT_ICE_SERVERS;
-  try {
-    const v = JSON.parse(raw) as unknown;
-    if (Array.isArray(v)) return v as RTCIceServer[];
-  } catch {
-    // 下で警告する
-  }
-  console.warn('[voice] VITE_ICE_SERVERS is not a JSON array; using the default STUN server');
-  return DEFAULT_ICE_SERVERS;
 }

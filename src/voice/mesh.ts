@@ -63,9 +63,26 @@ export class VoiceMesh {
   private selfId: string | null = null;
   private active = false;
   private track: MediaStreamTrack | null = null;
+  private iceServers: RTCIceServer[];
 
   constructor(deps: VoiceMeshDeps) {
     this.deps = deps;
+    this.iceServers = deps.iceServers ?? DEFAULT_ICE_SERVERS;
+  }
+
+  /**
+   * ICE servers from the server (`ice` message), including short-lived TURN credentials.
+   * Existing connections get the new credentials for future ICE restarts.
+   */
+  setIceServers(servers: RTCIceServer[]): void {
+    this.iceServers = servers;
+    for (const link of this.links.values()) {
+      try {
+        link.pc.setConfiguration({ ...link.pc.getConfiguration(), iceServers: servers });
+      } catch {
+        // some browsers refuse changes they consider incompatible; new links still use them
+      }
+    }
   }
 
   /** 自分が通話に参加しているか。false にすると全部の接続を閉じる。 */
@@ -187,7 +204,7 @@ export class VoiceMesh {
   }
 
   private open(peerId: string, offerer: boolean): Link {
-    const config: RTCConfiguration = { iceServers: this.deps.iceServers ?? DEFAULT_ICE_SERVERS };
+    const config: RTCConfiguration = { iceServers: this.iceServers };
     const pc = this.deps.createPeerConnection?.(config) ?? new RTCPeerConnection(config);
     const link = new Link(peerId, pc, offerer);
     this.links.set(peerId, link);

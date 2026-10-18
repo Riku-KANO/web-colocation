@@ -150,6 +150,8 @@ const peer = (id: string, voice: VoiceState): PeerInfo => ({
   device: 'desktop',
   space: '',
   voice,
+  role: 'member',
+  verified: false,
 });
 
 const flush = async () => {

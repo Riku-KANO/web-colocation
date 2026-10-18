@@ -1,5 +1,5 @@
-// 共有ホワイトボード。ストロークはボード上の正規化座標 (u, v) で同期し、
-// 各端末が CanvasTexture に描き込む。ボードの大きさや置き場所が端末ごとに違っても破綻しない。
+// Shared whiteboard. Strokes are synced in normalized board coordinates (u, v) and every device
+// rasterizes them into a CanvasTexture, so boards may differ in size/placement between devices.
 
 import {
   BoxGeometry,
@@ -12,10 +12,10 @@ import {
   SRGBColorSpace,
   Vector3,
 } from 'three';
-import { BOARD, type Stroke } from '../../shared/protocol.ts';
+import type { Stroke } from '../../shared/protocol.ts';
+import type { BoardSpec } from '../../shared/roomConfig.ts';
 
 const CANVAS_W = 1536;
-const CANVAS_H = 1024;
 /** テクスチャ転送の最小間隔。毎フレーム 6MB 転送するとモバイル GPU では重い。 */
 const UPLOAD_INTERVAL_MS = 33;
 
@@ -27,12 +27,15 @@ export interface BoardHit {
 }
 
 export class Whiteboard {
-  readonly id = BOARD.id;
+  readonly id: string;
+  readonly spec: BoardSpec;
   readonly root = new Group();
   readonly surface: Mesh;
   readonly clearButton: Mesh;
 
   private readonly canvas = document.createElement('canvas');
+  /** Canvas height follows the board's aspect ratio (width is fixed at CANVAS_W). */
+  private readonly canvasH: number;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly texture: CanvasTexture;
   private readonly strokes = new Map<string, Stroke>();
@@ -40,13 +43,17 @@ export class Whiteboard {
   private lastUpload = 0;
   private readonly tmp = new Vector3();
 
-  constructor() {
-    this.root.name = 'whiteboard';
-    this.root.position.fromArray(BOARD.center);
-    this.root.rotation.y = BOARD.yaw;
+  constructor(spec: BoardSpec, clearLabel = 'Clear board') {
+    this.spec = spec;
+    this.id = spec.id;
+    this.root.name = `whiteboard:${spec.id}`;
+    this.root.position.set(spec.x, spec.y, spec.z);
+    this.root.rotation.y = spec.yaw;
+    const BOARD = spec;
 
     this.canvas.width = CANVAS_W;
-    this.canvas.height = CANVAS_H;
+    this.canvasH = Math.min(2048, Math.max(64, Math.round((CANVAS_W * spec.height) / spec.width)));
+    this.canvas.height = this.canvasH;
     this.ctx = this.canvas.getContext('2d')!;
     this.texture = new CanvasTexture(this.canvas);
     this.texture.colorSpace = SRGBColorSpace;
@@ -55,6 +62,7 @@ export class Whiteboard {
     this.surface = new Mesh(new PlaneGeometry(BOARD.width, BOARD.height), new MeshBasicMaterial({ map: this.texture }));
     this.surface.name = 'board-surface';
     this.surface.userData.boardId = this.id;
+    this.surface.userData.boardSurface = true;
 
     // 枠
     const frameMat = new MeshStandardMaterial({ color: '#5b6270', roughness: 0.5 });
@@ -68,9 +76,10 @@ export class Whiteboard {
     const right = left.clone();
     right.position.x = -left.position.x;
 
-    this.clearButton = makeButton('ボードを消去');
+    this.clearButton = makeButton(clearLabel);
     this.clearButton.position.set(BOARD.width / 2 - 0.1, -BOARD.height / 2 - 0.06, 0);
     this.clearButton.userData.action = 'board-clear';
+    this.clearButton.userData.boardId = this.id;
 
     this.root.add(this.surface, top, bottom, left, right, this.clearButton);
     this.redrawAll();
@@ -80,7 +89,18 @@ export class Whiteboard {
   toBoard(world: Vector3): BoardHit {
     this.surface.updateWorldMatrix(true, false);
     const p = this.surface.worldToLocal(this.tmp.copy(world));
-    return { u: p.x / BOARD.width + 0.5, v: p.y / BOARD.height + 0.5, depth: p.z };
+    return { u: p.x / this.spec.width + 0.5, v: p.y / this.spec.height + 0.5, depth: p.z };
+  }
+
+  dispose(): void {
+    this.root.traverse((o) => {
+      const m = o as Mesh;
+      m.geometry?.dispose();
+      const mat = m.material as MeshBasicMaterial | undefined;
+      mat?.map?.dispose();
+      mat?.dispose?.();
+    });
+    this.texture.dispose();
   }
 
   static inBounds(h: { u: number; v: number }): boolean {
@@ -132,8 +152,8 @@ export class Whiteboard {
 
   private redrawAll(): void {
     const ctx = this.ctx;
-    ctx.fillStyle = '#fbfbf8';
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.fillStyle = this.spec.background;
+    ctx.fillRect(0, 0, CANVAS_W, this.canvasH);
     for (const s of this.strokes.values()) this.drawFrom(s, 0);
     this.dirty = true;
   }
@@ -144,8 +164,8 @@ export class Whiteboard {
     const n = s.pts.length / 2;
     if (n === 0) return;
     const px = (i: number) => s.pts[i * 2] * CANVAS_W;
-    const py = (i: number) => (1 - s.pts[i * 2 + 1]) * CANVAS_H;
-    const lw = Math.max(1, (s.width / BOARD.width) * CANVAS_W);
+    const py = (i: number) => (1 - s.pts[i * 2 + 1]) * this.canvasH;
+    const lw = Math.max(1, (s.width / this.spec.width) * CANVAS_W);
     ctx.strokeStyle = s.color;
     ctx.fillStyle = s.color;
     ctx.lineWidth = lw;

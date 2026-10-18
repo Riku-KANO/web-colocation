@@ -26,7 +26,8 @@ import {
 } from 'three';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
-import type { Seat } from '../../shared/protocol.ts';
+import { seatForward, type AnchorSpec, type SeatSpec } from '../../shared/roomConfig.ts';
+import type { BoardManager } from '../board/boardManager.ts';
 import type { StrokeHandle, StrokeWriter } from '../board/strokeWriter.ts';
 import { Whiteboard } from '../board/whiteboard.ts';
 import { PEN_TIP } from '../scene/objectMeshes.ts';
@@ -103,14 +104,14 @@ export interface XRInputDeps {
   scene: Scene;
   sharedRoot: Object3D;
   objects: ObjectManager;
-  board: Whiteboard;
+  boards: BoardManager;
   strokes: StrokeWriter;
   panel: XRPanel;
   inkColor(): string;
   isCalibrating(): boolean;
   onCalibrationPoint(pWorld: Vector3): void;
   onPanelButton(id: string): void;
-  onBoardClear(): void;
+  onBoardClear(boardId: string): void;
 }
 
 export class XRInput {
@@ -123,7 +124,7 @@ export class XRInput {
   private readonly tmpV = new Vector3();
   /** パネルを持っている手 (null ならワールド固定)。 */
   private panelHand: HandState | null = null;
-  private worldPanelSeat: Seat | null = null;
+  private worldPanelSeat: { seat: SeatSpec; anchor: AnchorSpec } | null = null;
 
   constructor(deps: XRInputDeps) {
     this.deps = deps;
@@ -175,23 +176,20 @@ export class XRInput {
       return;
     }
     this.panelHand = null;
-    this.placeWorldPanel(this.worldPanelSeat);
+    if (this.worldPanelSeat) this.placeWorldPanel(this.worldPanelSeat.seat, this.worldPanelSeat.anchor);
   }
 
-  /** ワールド固定時のパネル位置: 自分の席から見て左前、天板の少し上。 */
-  placeWorldPanel(seat: Seat | null): void {
-    this.worldPanelSeat = seat;
+  /** World-locked panel: in front-left of your seat, about 1 m above the floor. */
+  placeWorldPanel(seat: SeatSpec, anchor: AnchorSpec): void {
+    this.worldPanelSeat = { seat, anchor };
     if (this.panelHand) return;
     const panel = this.deps.panel.mesh;
-    const s = seat ?? { x: 0, z: 0.75 };
-    const len = Math.hypot(s.x, s.z) || 1;
-    const fx = -s.x / len;
-    const fz = -s.z / len; // 席からテーブル中心へ向かう向き
+    const [fx, fz] = seatForward(seat.yaw);
     const lx = fz;
-    const lz = -fx; // 左手方向
+    const lz = -fx; // left of the seat
     this.deps.sharedRoot.add(panel);
-    panel.position.set(s.x + fx * 0.35 + lx * 0.32, 0.28, s.z + fz * 0.35 + lz * 0.32);
-    panel.rotation.set(0, Math.atan2(-fx, -fz), 0);
+    panel.position.set(seat.x + fx * 0.35 + lx * 0.32, 1.0 - anchor.floorOffset, seat.z + fz * 0.35 + lz * 0.32);
+    panel.rotation.set(0, seat.yaw, 0);
     panel.rotateX(-0.35);
   }
 
@@ -204,7 +202,7 @@ export class XRInput {
   }
 
   update(): void {
-    const { scene, objects, board, panel, sharedRoot } = this.deps;
+    const { scene, objects, panel, sharedRoot } = this.deps;
     scene.updateMatrixWorld();
     const calibrating = this.deps.isCalibrating();
     let panelHover: { x: number; y: number } | null = null;
@@ -236,9 +234,11 @@ export class XRInput {
       h.ray.scale.z = hit ? hit.distance : RAY_LENGTH;
       if (hit?.object === panel.mesh && hit.uv) panelHover = hit.uv;
       if (h.rayStroke) {
-        if (hit?.object === board.surface && hit.uv) h.rayStroke.add(hit.uv.x, hit.uv.y);
+        if (hit?.object.userData.boardId === h.rayStroke.boardId && hit.object.userData.boardSurface && hit.uv) {
+          h.rayStroke.add(hit.uv.x, hit.uv.y);
+        }
       }
-      (h.ray.material as LineBasicMaterial).color.set(hit && hit.object !== board.surface ? '#7cc4ff' : '#ffffff');
+      (h.ray.material as LineBasicMaterial).color.set(hit && !hit.object.userData.boardSurface ? '#7cc4ff' : '#ffffff');
     }
     panel.setHover(panelHover);
   }
@@ -254,7 +254,7 @@ export class XRInput {
   // ---- 内部 ----
 
   private press(h: HandState, button: Button): void {
-    const { objects, board, panel } = this.deps;
+    const { objects, boards, panel } = this.deps;
     this.deps.scene.updateMatrixWorld();
 
     if (button === 'select') {
@@ -267,9 +267,10 @@ export class XRInput {
         }
         return;
       }
-      if (hit?.object === board.clearButton) {
+      const clearBoard = hit && hit.object.userData.action === 'board-clear' ? boards.boardOf(hit.object) : undefined;
+      if (clearBoard) {
         h.haptic(0.4, 30);
-        this.deps.onBoardClear();
+        this.deps.onBoardClear(clearBoard.id);
         return;
       }
       if (this.deps.isCalibrating()) {
@@ -288,8 +289,8 @@ export class XRInput {
       const hit = this.rayHit(h);
       const id = hit?.object.userData.objectId as string | undefined;
       if (id) target = objects.get(id);
-      else if (hit?.object === board.surface && hit.uv && button === 'select') {
-        h.rayStroke = this.deps.strokes.begin(this.deps.inkColor(), RAY_INK_WIDTH, hit.uv.x, hit.uv.y);
+      else if (hit?.object.userData.boardSurface && hit.uv && button === 'select') {
+        h.rayStroke = this.deps.strokes.begin(hit.object.userData.boardId as string, this.deps.inkColor(), RAY_INK_WIDTH, hit.uv.x, hit.uv.y);
         h.rayStrokeButton = button;
         return;
       }
@@ -335,17 +336,22 @@ export class XRInput {
   private updatePen(h: HandState, penWorld: Matrix4): void {
     const hold = h.hold!;
     const tip = this.tmpV.copy(PEN_TIP).applyMatrix4(penWorld);
-    const b = this.deps.board.toBoard(tip);
-    const contact = Whiteboard.inBounds(b) && b.depth < CONTACT_FRONT && b.depth > CONTACT_BACK;
-    if (contact) {
-      if (!hold.stroke) {
-        hold.stroke = this.deps.strokes.begin(hold.penColor, PEN_WIDTH, b.u, b.v);
-        h.haptic(0.3, 20);
-      } else hold.stroke.add(b.u, b.v);
-    } else if (hold.stroke) {
+    // The board whose surface the tip touches (closest one if several).
+    let touched: { id: string; u: number; v: number; d: number } | null = null;
+    for (const board of this.deps.boards.all()) {
+      const b = board.toBoard(tip);
+      if (!Whiteboard.inBounds(b) || b.depth >= CONTACT_FRONT || b.depth <= CONTACT_BACK) continue;
+      if (!touched || Math.abs(b.depth) < touched.d) touched = { id: board.id, u: b.u, v: b.v, d: Math.abs(b.depth) };
+    }
+    if (hold.stroke && (!touched || touched.id !== hold.stroke.boardId)) {
       hold.stroke.end();
       hold.stroke = null;
     }
+    if (!touched) return;
+    if (!hold.stroke) {
+      hold.stroke = this.deps.strokes.begin(touched.id, hold.penColor, PEN_WIDTH, touched.u, touched.v);
+      h.haptic(0.3, 20);
+    } else hold.stroke.add(touched.u, touched.v);
   }
 
   /** 指先 (ハンド) またはコントローラー先端のワールド座標。 */
@@ -358,10 +364,10 @@ export class XRInput {
   }
 
   private rayHit(h: HandState): Intersection | null {
-    const { panel, board, objects } = this.deps;
+    const { panel, boards, objects } = this.deps;
     this.raycaster.setFromXRController(h.controller);
     this.raycaster.far = RAY_LENGTH;
-    const targets: Object3D[] = [board.surface, board.clearButton, ...objects.pickables()];
+    const targets: Object3D[] = [...boards.surfaces(), ...boards.clearButtons(), ...objects.pickables()];
     if (panel.mesh.parent && this.panelHand !== h) targets.unshift(panel.mesh);
     const hits = this.raycaster.intersectObjects(targets, true);
     // パネルは depthTest なしで最前面に描くので、当たっていれば最優先

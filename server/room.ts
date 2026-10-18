@@ -1,64 +1,123 @@
-// 1 つのミーティングルームの状態と、その状態を変える唯一の場所。
-// 通信手段 (ws / Durable Objects / テスト用の偽接続) には依存しない。
+// State of one meeting room and the only place that mutates it.
+// Transport-agnostic (ws, tests, or a future Durable Object): peers are just `PeerConn`s.
 
 import {
   PROTOCOL_VERSION,
-  defaultObjects,
   type AvatarPose,
   type ClientMsg,
+  type ErrorCode,
   type ObjectState,
   type PeerInfo,
+  type Role,
   type RoomSnapshot,
   type ServerMsg,
   type Stroke,
 } from '../shared/protocol.ts';
+import type { PermissionLevel, RoomConfig, RoomSettingsPatch } from '../shared/roomConfig.ts';
 import { LIMITS } from '../shared/validate.ts';
 
 export interface PeerConn {
-  /** シリアライズ済みの JSON を 1 メッセージとして送る。 */
+  /** Send one serialized JSON message. */
   send(data: string): void;
 }
 
 type Hello = Extract<ClientMsg, { t: 'hello' }>;
 
+export interface JoinRequest {
+  hello: Hello;
+  /** Display name (already taken from the SSO identity when applicable). */
+  name: string;
+  verified: boolean;
+  /** The identity is listed in the room's hosts or is a global admin. */
+  configuredHost: boolean;
+}
+
+export interface RoomHooks {
+  /** State changed in a way worth persisting (objects settled, strokes, settings). */
+  onChange?(): void;
+  /**
+   * A host asked to change the room settings (permission already checked). The owner validates
+   * and persists it (possibly asynchronously), then calls `reconfigure()` or `notify()`s an error.
+   */
+  applySettings?(peerId: string, patch: RoomSettingsPatch): void;
+}
+
+export interface RoomOptions {
+  /**
+   * 'configured': only people listed as hosts (or admins) are hosts.
+   * 'first-joiner': the earliest participant still present is the host (ad-hoc rooms).
+   */
+  hostMode: 'configured' | 'first-joiner';
+  hooks?: RoomHooks;
+}
+
 interface PeerEntry {
   info: PeerInfo;
   conn: PeerConn;
   pose: AvatarPose | null;
+  configuredHost: boolean;
 }
+
+type Action = 'clearBoard' | 'resetObjects' | 'editSettings';
+
+const clone = <T>(v: T): T => structuredClone(v);
 
 export class Room {
   readonly id: string;
+  config: RoomConfig;
+  /** Increases when the room is reconfigured; stale client messages are dropped. */
+  epoch = 1;
+  readonly hostMode: RoomOptions['hostMode'];
+  private readonly hooks: RoomHooks;
   private readonly peers = new Map<string, PeerEntry>();
-  private readonly objects = new Map<string, ObjectState>();
-  /** 挿入順 = 描画順。 */
+  private objects = new Map<string, ObjectState>();
+  /** Insertion order = drawing order. */
   private readonly strokes = new Map<string, Stroke>();
+  private strokePoints = 0;
 
-  constructor(id: string) {
-    this.id = id;
-    for (const o of defaultObjects()) this.objects.set(o.id, o);
+  constructor(config: RoomConfig, options: RoomOptions = { hostMode: 'first-joiner' }) {
+    this.id = config.id;
+    this.config = config;
+    this.hostMode = options.hostMode;
+    this.hooks = options.hooks ?? {};
+    this.resetObjectsFromConfig();
   }
 
   get peerCount(): number {
     return this.peers.size;
   }
 
-  join(peerId: string, conn: PeerConn, hello: Hello): PeerInfo {
+  /** People that fit: limited by the rules and by the number of seats. */
+  get capacity(): number {
+    return Math.min(this.config.rules.maxParticipants, this.config.seats.length);
+  }
+
+  /** Why a new participant cannot join right now, or null. */
+  admissionError(): ErrorCode | null {
+    return this.peers.size >= this.capacity ? 'room-full' : null;
+  }
+
+  join(peerId: string, conn: PeerConn, req: JoinRequest): PeerInfo {
+    const { hello } = req;
     const info: PeerInfo = {
       id: peerId,
-      name: hello.name.trim() || `Guest-${peerId.slice(0, 4)}`,
+      name: req.name.trim() || `Guest-${peerId.slice(0, 4)}`,
       color: hello.color,
       seat: this.freeSeat(),
       device: hello.device,
       space: hello.space,
       voice: hello.voice ?? 'off',
+      role: this.initialRole(req.configuredHost),
+      verified: req.verified,
     };
-    this.peers.set(peerId, { info, conn, pose: null });
+    this.peers.set(peerId, { info, conn, pose: null, configuredHost: req.configuredHost });
     this.sendTo(peerId, {
       t: 'welcome',
       v: PROTOCOL_VERSION,
       room: this.id,
       self: info,
+      epoch: this.epoch,
+      config: this.config,
       snapshot: this.snapshot(),
     });
     this.broadcast({ t: 'peer-join', peer: info }, peerId);
@@ -66,11 +125,15 @@ export class Room {
   }
 
   leave(peerId: string): void {
-    if (!this.peers.delete(peerId)) return;
-    // 掴んだまま切断されたオブジェクトは、最後の姿勢のまま手放す。
+    const entry = this.peers.get(peerId);
+    if (!entry) return;
+    this.peers.delete(peerId);
+    // Objects held by someone who disconnects are released where they are.
+    let changed = false;
     for (const o of this.objects.values()) {
       if (o.owner === peerId) {
         o.owner = null;
+        changed = true;
         this.broadcast({ t: 'owner', id: o.id, owner: null, pose: o.pose });
       }
     }
@@ -81,38 +144,47 @@ export class Room {
       }
     }
     this.broadcast({ t: 'peer-leave', id: peerId });
+    if (entry.info.role === 'host') this.promoteHost();
+    if (changed) this.hooks.onChange?.();
+  }
+
+  /** Send a message to one participant (used by the server for `ice` updates). */
+  notify(peerId: string, msg: ServerMsg): void {
+    this.sendTo(peerId, msg);
+  }
+
+  has(peerId: string): boolean {
+    return this.peers.has(peerId);
   }
 
   handle(peerId: string, msg: ClientMsg): void {
     const peer = this.peers.get(peerId);
     if (!peer) return;
+    // Messages produced before the latest reconfiguration refer to objects/boards that may be gone.
+    if ('e' in msg && msg.e !== this.epoch) return;
     switch (msg.t) {
       case 'hello':
-        return; // 参加後の hello は無視
-      case 'profile': {
+        return;
+      case 'profile':
         peer.info.device = msg.device;
         peer.info.space = msg.space;
         this.broadcast({ t: 'peer-update', peer: peer.info });
         return;
-      }
-      case 'voice': {
+      case 'voice':
         if (peer.info.voice === msg.state) return;
         peer.info.voice = msg.state;
         this.broadcast({ t: 'peer-update', peer: peer.info });
         return;
-      }
       case 'rtc-offer':
       case 'rtc-answer':
       case 'rtc-ice': {
-        // 中身は解釈せず宛先へ中継するだけ。IP アドレス入りの ICE 候補を音声に参加していない人へ渡さないよう、
-        // 送り主と宛先の両方が参加しているときに限る。
+        // Relay only between peers that both joined voice, so ICE candidates (IP addresses)
+        // never reach people who are not in the call.
         const to = this.peers.get(msg.to);
         if (!to || msg.to === peerId || peer.info.voice === 'off' || to.info.voice === 'off') return;
         this.sendTo(
           msg.to,
-          msg.t === 'rtc-ice'
-            ? { t: 'rtc-ice', from: peerId, candidate: msg.candidate }
-            : { t: msg.t, from: peerId, sdp: msg.sdp },
+          msg.t === 'rtc-ice' ? { t: 'rtc-ice', from: peerId, candidate: msg.candidate } : { t: msg.t, from: peerId, sdp: msg.sdp },
         );
         return;
       }
@@ -133,7 +205,7 @@ export class Room {
       }
       case 'move': {
         const o = this.objects.get(msg.id);
-        if (!o || o.owner !== peerId) return; // 所有者以外の move は捨てる
+        if (!o || o.owner !== peerId) return; // only the owner may move it
         o.pose = msg.pose;
         this.broadcast({ t: 'move', id: o.id, pose: o.pose }, peerId);
         return;
@@ -144,34 +216,30 @@ export class Room {
         o.pose = msg.pose;
         o.owner = null;
         this.broadcast({ t: 'owner', id: o.id, owner: null, pose: o.pose });
+        this.hooks.onChange?.();
         return;
       }
       case 'stroke': {
-        if (this.strokes.has(msg.id)) return;
-        if (this.strokes.size >= LIMITS.strokesPerRoom) {
-          this.sendTo(peerId, { t: 'error', message: 'ストローク数の上限に達しました。ボードを消去してください。' });
+        if (this.strokes.has(msg.id) || !this.config.boards.some((b) => b.id === msg.board)) return;
+        if (this.strokes.size >= LIMITS.strokesPerRoom || this.strokePoints >= LIMITS.ptsPerRoom) {
+          this.sendTo(peerId, { t: 'error', code: 'limit', message: 'whiteboard is full' });
           return;
         }
-        const s: Stroke = {
-          id: msg.id,
-          board: msg.board,
-          author: peerId,
-          color: msg.color,
-          width: msg.width,
-          pts: msg.pts.slice(0, LIMITS.ptsPerStroke),
-          done: false,
-        };
+        const pts = msg.pts.slice(0, LIMITS.ptsPerStroke);
+        const s: Stroke = { id: msg.id, board: msg.board, author: peerId, color: msg.color, width: msg.width, pts, done: false };
         this.strokes.set(s.id, s);
+        this.strokePoints += pts.length;
         this.broadcast({ t: 'stroke', stroke: s }, peerId);
         return;
       }
       case 'stroke-pts': {
         const s = this.strokes.get(msg.id);
         if (!s || s.author !== peerId || s.done) return;
-        const room = LIMITS.ptsPerStroke - s.pts.length;
-        if (room <= 0) return;
+        const room = Math.min(LIMITS.ptsPerStroke - s.pts.length, LIMITS.ptsPerRoom - this.strokePoints);
+        if (room <= 1) return;
         const pts = msg.pts.length > room ? msg.pts.slice(0, room - (room % 2)) : msg.pts;
         s.pts.push(...pts);
+        this.strokePoints += pts.length;
         this.broadcast({ t: 'stroke-pts', id: s.id, pts }, peerId);
         return;
       }
@@ -180,26 +248,77 @@ export class Room {
         if (!s || s.author !== peerId || s.done) return;
         s.done = true;
         this.broadcast({ t: 'stroke-end', id: s.id }, peerId);
+        this.hooks.onChange?.();
         return;
       }
       case 'board-clear': {
-        for (const [id, s] of this.strokes) if (s.board === msg.board) this.strokes.delete(id);
+        if (!this.permitted(peer, 'clearBoard')) return;
+        for (const [id, s] of this.strokes) {
+          if (s.board === msg.board) {
+            this.strokes.delete(id);
+            this.strokePoints -= s.pts.length;
+          }
+        }
         this.broadcast({ t: 'board-clear', board: msg.board }, peerId);
+        this.hooks.onChange?.();
         return;
       }
       case 'reset-objects': {
-        for (const d of defaultObjects()) {
-          const o = this.objects.get(d.id);
-          if (o && o.owner !== null && this.peers.has(o.owner)) continue; // 誰かが掴んでいる物はそのまま
-          this.objects.set(d.id, d);
+        if (!this.permitted(peer, 'resetObjects')) return;
+        for (const spec of this.config.objects) {
+          const o = this.objects.get(spec.id);
+          if (o && o.owner !== null && this.peers.has(o.owner)) continue; // keep objects someone is holding
+          this.objects.set(spec.id, { ...clone(spec), owner: null });
         }
         this.broadcast({ t: 'objects', objects: [...this.objects.values()] });
+        this.hooks.onChange?.();
+        return;
+      }
+      case 'room-settings': {
+        if (!this.permitted(peer, 'editSettings')) return;
+        if (this.hooks.applySettings) this.hooks.applySettings(peerId, msg.settings);
+        else this.sendTo(peerId, { t: 'error', code: 'not-allowed' });
         return;
       }
       case 'ping':
         this.sendTo(peerId, { t: 'pong', ts: msg.ts });
         return;
     }
+  }
+
+  /**
+   * Replace the room configuration atomically: release held objects, reset objects, drop strokes
+   * on boards that no longer exist, keep seats where possible, bump the epoch and send every
+   * participant the new config with a full snapshot.
+   */
+  reconfigure(config: RoomConfig): void {
+    this.config = config;
+    this.epoch++;
+    this.resetObjectsFromConfig();
+    const boards = new Set(config.boards.map((b) => b.id));
+    for (const [id, s] of this.strokes) {
+      if (!boards.has(s.board)) {
+        this.strokes.delete(id);
+        this.strokePoints -= s.pts.length;
+      } else if (!s.done) s.done = true;
+    }
+    const taken = new Set<number>();
+    const reseat: PeerEntry[] = [];
+    for (const p of this.peers.values()) {
+      if (p.info.seat < config.seats.length && !taken.has(p.info.seat)) taken.add(p.info.seat);
+      else reseat.push(p);
+    }
+    for (const p of reseat) {
+      let seat = 0;
+      while (taken.has(seat)) seat++;
+      p.info.seat = seat; // may exceed seats.length if the room shrank; clients wrap around
+      taken.add(seat);
+    }
+    const snapshot = this.snapshot();
+    for (const [id, p] of this.peers) {
+      this.sendTo(id, { t: 'config', epoch: this.epoch, config: this.config, self: p.info, snapshot });
+    }
+    this.hooks.onChange?.();
   }
 
   snapshot(): RoomSnapshot {
@@ -211,6 +330,56 @@ export class Room {
       objects: [...this.objects.values()],
       strokes: [...this.strokes.values()],
     };
+  }
+
+  /** Persistable state (no peers): settled object poses and finished strokes. */
+  exportState(): { objects: ObjectState[]; strokes: Stroke[] } {
+    return {
+      objects: [...this.objects.values()].map((o) => ({ ...clone(o), owner: null })),
+      strokes: [...this.strokes.values()].filter((s) => s.done).map(clone),
+    };
+  }
+
+  /** Restore persisted state; unknown objects/boards are ignored and nobody holds anything. */
+  importState(state: { objects?: ObjectState[]; strokes?: Stroke[] }): void {
+    for (const o of state.objects ?? []) {
+      const cur = this.objects.get(o.id);
+      if (cur) cur.pose = o.pose;
+    }
+    const boards = new Set(this.config.boards.map((b) => b.id));
+    for (const s of state.strokes ?? []) {
+      if (!boards.has(s.board) || this.strokes.has(s.id)) continue;
+      if (this.strokePoints + s.pts.length > LIMITS.ptsPerRoom) break;
+      this.strokes.set(s.id, { ...s, done: true });
+      this.strokePoints += s.pts.length;
+    }
+  }
+
+  private resetObjectsFromConfig(): void {
+    this.objects = new Map(this.config.objects.map((o) => [o.id, { ...clone(o), owner: null }]));
+  }
+
+  private permitted(peer: PeerEntry, action: Action): boolean {
+    const level: PermissionLevel = this.config.rules.permissions[action];
+    if (level === 'everyone' || peer.info.role === 'host') return true;
+    this.sendTo(peer.info.id, { t: 'error', code: 'not-allowed' });
+    return false;
+  }
+
+  private initialRole(configuredHost: boolean): Role {
+    if (configuredHost) return 'host';
+    if (this.hostMode === 'first-joiner' && ![...this.peers.values()].some((p) => p.info.role === 'host')) return 'host';
+    return 'member';
+  }
+
+  /** In ad-hoc rooms the earliest remaining participant becomes host when the host leaves. */
+  private promoteHost(): void {
+    if (this.hostMode !== 'first-joiner') return;
+    if ([...this.peers.values()].some((p) => p.info.role === 'host')) return;
+    const next = this.peers.values().next().value;
+    if (!next) return;
+    next.info.role = 'host';
+    this.broadcast({ t: 'peer-update', peer: next.info });
   }
 
   private freeSeat(): number {

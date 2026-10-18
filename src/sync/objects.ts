@@ -1,15 +1,17 @@
-// 共有オブジェクトの同期。
+// Shared object synchronization.
 //
-// 競合の解決は「所有権 (ロック)」方式:
-//   1. 掴んだ瞬間に楽観的に自分の物として動かし始め、サーバーへ grab を送る
-//   2. サーバーが先着順で owner を確定してブロードキャストする
-//   3. 負けた側は owner / grab-denied を受けて手を離し、サーバーの姿勢へ戻る
-//   4. 所有者だけが move を送れる (サーバーも所有者以外の move は捨てる)
-// 所有者でない端末では、受信した姿勢へ指数平滑化で滑らかに追従させる。
+// Conflicts are resolved with ownership (a lock):
+//   1. On grab we optimistically start moving the object locally and send `grab`.
+//   2. The server confirms the first claimant and broadcasts `owner`.
+//   3. A losing claimant receives `owner` / `grab-denied`, lets go and returns to the server pose.
+//   4. Only the owner sends `move` (the server drops moves from anyone else).
+// Non-owners follow received poses with frame-rate independent exponential smoothing.
 
 import { Color, Group, Quaternion, Vector3, type Object3D } from 'three';
-import type { ClientMsg, ObjectKind, ObjectState, Pose } from '../../shared/protocol.ts';
-import { buildObjectMesh, type BuiltObject } from '../scene/objectMeshes.ts';
+import type { ObjectState, Pose } from '../../shared/protocol.ts';
+import type { ObjectKind } from '../../shared/roomConfig.ts';
+import type { StateMsgInput } from '../net/netClient.ts';
+import { buildObjectMesh, objectSignature, type BuiltObject } from '../scene/objectMeshes.ts';
 import { readPose, smoothing, toPose } from '../util/pose.ts';
 
 const SEND_INTERVAL_MS = 33; // 掴んでいる間の送信レート (約 30 Hz)
@@ -20,6 +22,8 @@ export class SyncedObject {
   readonly id: string;
   readonly kind: ObjectKind;
   readonly color: string;
+  /** Identifies the visual (kind, colour, scale, model); a change requires rebuilding. */
+  readonly signature: string;
   readonly built: BuiltObject;
   owner: string | null = null;
   /** この端末で掴んでいるか (楽観的な状態も含む)。 */
@@ -34,7 +38,8 @@ export class SyncedObject {
     this.id = state.id;
     this.kind = state.kind;
     this.color = state.color;
-    this.built = buildObjectMesh(state.kind, state.color);
+    this.signature = objectSignature(state);
+    this.built = buildObjectMesh(state);
     this.root.name = `obj:${state.id}`;
     this.root.traverse((o) => (o.userData.objectId = state.id));
     readPose(state.pose, this.targetP, this.targetQ);
@@ -57,7 +62,7 @@ export class SyncedObject {
 }
 
 export interface ObjectManagerDeps {
-  send(msg: ClientMsg): void;
+  send(msg: StateMsgInput): void;
   selfId(): string | null;
   isPeerPresent(id: string): boolean;
   peerColor(id: string): string | null;
@@ -91,6 +96,14 @@ export class ObjectManager {
     for (const s of states) {
       seen.add(s.id);
       let o = this.objs.get(s.id);
+      if (o && o.signature !== objectSignature(s)) {
+        // Same id but a different object (room reconfigured): rebuild it.
+        this.dropLocal(o);
+        this.root.remove(o.root);
+        o.built.dispose();
+        this.objs.delete(s.id);
+        o = undefined;
+      }
       if (!o) {
         o = new SyncedObject(s);
         this.objs.set(s.id, o);
@@ -107,6 +120,7 @@ export class ObjectManager {
       if (!seen.has(id)) {
         this.dropLocal(o);
         this.root.remove(o.root);
+        o.built.dispose();
         this.objs.delete(id);
       }
     }

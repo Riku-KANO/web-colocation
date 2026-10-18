@@ -19,7 +19,8 @@ import {
   Vector3,
   type Texture,
 } from 'three';
-import { seatAt, type AvatarPose, type PeerInfo, type Pose } from '../../shared/protocol.ts';
+import type { AvatarPose, PeerInfo, Pose } from '../../shared/protocol.ts';
+import { seatEye, type AnchorSpec, type SeatSpec } from '../../shared/roomConfig.ts';
 import { readPose, smoothing } from '../util/pose.ts';
 import { LevelMeter } from '../voice/level.ts';
 
@@ -119,7 +120,7 @@ export class RemoteAvatar {
   private readonly baseColor: Color;
   private voice: RemoteVoice | null = null;
 
-  constructor(info: PeerInfo) {
+  constructor(info: PeerInfo, seat: SeatSpec, anchor: AnchorSpec) {
     this.info = info;
     this.root.name = `avatar:${info.id}`;
     this.baseColor = new Color(info.color);
@@ -157,10 +158,12 @@ export class RemoteAvatar {
     this.hands = [mkHand(), mkHand()];
     this.root.add(this.head.obj, this.hands[0].obj, this.hands[1].obj);
 
-    // 姿勢が届くまでは (相手のタブが裏にある等)、席に座ってテーブルを見ている姿で出しておく
-    const seat = seatAt(info.seat);
-    const yaw = Math.atan2(seat.x, seat.z); // -Z (正面) を席→中心方向へ向ける
-    this.head.set({ p: [seat.x, 0.45, seat.z], q: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)] });
+    // Until a pose arrives (e.g. their tab is in the background) show them sitting on their seat.
+    this.placeAtSeat(seat, anchor);
+  }
+
+  placeAtSeat(seat: SeatSpec, anchor: AnchorSpec): void {
+    this.head.set({ p: seatEye(seat, anchor), q: [0, Math.sin(seat.yaw / 2), 0, Math.cos(seat.yaw / 2)] });
   }
 
   /** 話している度合い (0..1)。音声が届いていなければ 0。 */
@@ -322,9 +325,21 @@ export class AvatarManager {
   private readonly streams = new Map<string, MediaStream>();
   private mySpace = '';
   private myDevice = 'desktop';
+  private seats: SeatSpec[] = [{ x: 0, z: 0.75, yaw: 0 }];
+  private anchor: AnchorSpec = { kind: 'table', floorOffset: 0.72 };
 
   constructor() {
     this.root.name = 'avatars';
+  }
+
+  /** Seats and anchor of the current room (used to place avatars that have not sent a pose yet). */
+  setRoom(seats: SeatSpec[], anchor: AnchorSpec): void {
+    this.seats = seats.length ? seats : this.seats;
+    this.anchor = anchor;
+  }
+
+  seatOf(index: number): SeatSpec {
+    return this.seats[((index % this.seats.length) + this.seats.length) % this.seats.length];
   }
 
   setSelf(space: string, device: string): void {
@@ -347,7 +362,7 @@ export class AvatarManager {
     let a = this.avatars.get(info.id);
     if (a) a.setInfo(info);
     else {
-      a = new RemoteAvatar(info);
+      a = new RemoteAvatar(info, this.seatOf(info.seat), this.anchor);
       this.avatars.set(info.id, a);
       this.root.add(a.root);
       const stream = this.streams.get(info.id);

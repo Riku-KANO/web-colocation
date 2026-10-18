@@ -1,7 +1,14 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { seatAt } from '../shared/protocol.ts';
+import type { AnchorSpec, SeatSpec } from '../shared/roomConfig.ts';
+import { seatForward } from '../shared/roomConfig.ts';
 import { frameFromOnePoint, frameFromTwoPoints, frameInFrontOfViewer } from '../src/sync/sharedFrame.ts';
+import { roomConfig } from './helpers.ts';
+
+const STANDARD = roomConfig();
+const seatAt = (i: number): SeatSpec => STANDARD.seats[i];
+const TABLE: AnchorSpec = STANDARD.anchor;
+const FLOOR: AnchorSpec = { kind: 'floor', floorOffset: 0 };
 
 const toLocal = (m: Matrix4, x: number, y: number, z: number) => new Vector3(x, y, z).applyMatrix4(m);
 const toShared = (m: Matrix4, v: Vector3) => v.clone().applyMatrix4(m.clone().invert());
@@ -52,7 +59,7 @@ describe('frameFromOnePoint (リモート: 各自の机)', () => {
       const seat = seatAt(seatIndex);
       const point = new Vector3(3, 0.7, -2);
       const viewer = new Vector3(5, 1.2, -2); // 机の +X 側に座っている
-      const m = frameFromOnePoint(point, viewer, seat);
+      const m = frameFromOnePoint(point, viewer, seat, TABLE);
       expectClose(toLocal(m, 0, 0, 0), point);
       const v = toShared(m, viewer);
       const dirShared = Math.atan2(v.x, v.z);
@@ -63,8 +70,8 @@ describe('frameFromOnePoint (リモート: 各自の机)', () => {
 
   it('向かい合う 2 人 (席 0 と 1) は、共有空間でもテーブルを挟んで向かい合う', () => {
     // 2 人は別々の部屋で、それぞれ自分の机の手前に座っている
-    const alice = frameFromOnePoint(new Vector3(0, 0.7, -0.6), new Vector3(0, 1.2, 0), seatAt(0));
-    const bob = frameFromOnePoint(new Vector3(10, 0.75, 5), new Vector3(10.5, 1.15, 5.1), seatAt(1));
+    const alice = frameFromOnePoint(new Vector3(0, 0.7, -0.6), new Vector3(0, 1.2, 0), seatAt(0), TABLE);
+    const bob = frameFromOnePoint(new Vector3(10, 0.75, 5), new Vector3(10.5, 1.15, 5.1), seatAt(1), TABLE);
     const aliceHead = toShared(alice, new Vector3(0, 1.2, 0));
     const bobHead = toShared(bob, new Vector3(10.5, 1.15, 5.1));
     expect(aliceHead.z).toBeGreaterThan(0.3);
@@ -73,14 +80,28 @@ describe('frameFromOnePoint (リモート: 各自の机)', () => {
 });
 
 describe('frameInFrontOfViewer', () => {
-  it('頭の正面・水平に机を置き、天板の高さを常識的な範囲に収める', () => {
-    const head = new Vector3(0, 1.6, 0);
+  it('puts the viewer at their seat, looking the way the seat faces, with a sensible table height', () => {
+    const head = new Vector3(0.3, 1.6, -0.2);
     const lookingRight = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI / 2); // -Z → +X
-    const m = frameInFrontOfViewer(head, lookingRight, seatAt(0));
-    const origin = toLocal(m, 0, 0, 0);
-    expect(origin.x).toBeGreaterThan(0.5);
-    expect(Math.abs(origin.z)).toBeLessThan(1e-6);
-    expect(origin.y).toBeGreaterThanOrEqual(0.6);
-    expect(origin.y).toBeLessThanOrEqual(1.05);
+    for (const i of [0, 1, 2]) {
+      const seat = seatAt(i);
+      const m = frameInFrontOfViewer(head, lookingRight, seat, TABLE);
+      const sharedHead = toShared(m, head);
+      expect(Math.hypot(sharedHead.x - seat.x, sharedHead.z - seat.z)).toBeLessThan(1e-6);
+      // the viewer's forward (+X in local space) maps to the seat's forward in the shared frame
+      const fwd = toShared(m, head.clone().add(new Vector3(1, 0, 0))).sub(sharedHead);
+      const [fx, fz] = seatForward(seat.yaw);
+      expect(fwd.x).toBeCloseTo(fx);
+      expect(fwd.z).toBeCloseTo(fz);
+      const origin = toLocal(m, 0, 0, 0);
+      expect(origin.y).toBeGreaterThanOrEqual(0.6);
+      expect(origin.y).toBeLessThanOrEqual(1.05);
+    }
+  });
+
+  it('floor anchors sit on the local floor', () => {
+    const m = frameInFrontOfViewer(new Vector3(0, 1.7, 0), new Quaternion(), { x: 0, z: 1, yaw: 0 }, FLOOR);
+    expect(toLocal(m, 0, 0, 0).y).toBe(0);
+    expect(toLocal(m, 0, 0, 0).z).toBeCloseTo(-1);
   });
 });

@@ -1,22 +1,24 @@
-// 共有座標系 (shared frame) の管理。
+// Shared frame management.
 //
-// 各端末の WebXR 参照空間 (local-floor) は端末ごとに原点も向きもバラバラ。
-// そこで「ローカル ← 共有」の剛体変換 M を端末ごとに求め、共有コンテンツは
-// すべて sharedRoot (行列 = M) の子として置く。ネットワークには共有座標系の値だけが流れる。
+// Every device's WebXR reference space (local-floor) has its own origin and heading. Each device
+// therefore computes a rigid transform M = local <- shared and puts all shared content under
+// `sharedRoot` (matrix = M). Only shared-frame values ever go over the network.
 //
-//   - 別々の部屋 (リモート):   各自が自分の机の上に 1 点でテーブルを置く → 着席方向で回転を決める
-//   - 同じ部屋 (コロケーション): 全員が同じ物理的な 2 点を同じ順番でタッチ → 物理空間と一致する
+//   - Remote (different rooms): place the room once (1 point, or automatically at your seat);
+//     the rotation is chosen from your assigned seat.
+//   - Colocated (same physical room): everyone touches the same two physical points in the same
+//     order, so the shared frame matches the physical room.
 //
-// WebXR には共有アンカー/クラウドアンカーの標準 API がないため、この「手動キャリブレーション」を
-// すべてのブラウザで動く最小公倍数として採用している。キャリブ後は XRAnchor (対応端末のみ) で
-// トラッキングの再ローカライズによるズレに追従させる。
+// WebXR has no standard shared/cloud anchors, so this manual calibration is the lowest common
+// denominator that works in every browser. Afterwards an XRAnchor (where supported) keeps the
+// frame aligned when tracking relocalizes.
 
 import { Group, Matrix4, Quaternion, Vector3 } from 'three';
-import { TABLE, type Seat } from '../../shared/protocol.ts';
+import { seatForward, type AnchorSpec, type SeatSpec } from '../../shared/roomConfig.ts';
 
 const UP = new Vector3(0, 1, 0);
 
-/** ベクトルの水平方向の角度 (+Z から +X 方向へ測る)。R_y(θ) はこの角度に θ を足す。 */
+/** Horizontal angle of a vector measured from +Z towards +X; R_y(θ) adds θ to it. */
 function heading(x: number, z: number): number {
   return Math.atan2(x, z);
 }
@@ -26,52 +28,65 @@ function compose(origin: Vector3, yaw: number): Matrix4 {
   return new Matrix4().compose(origin, q, new Vector3(1, 1, 1));
 }
 
-/**
- * 1 点キャリブレーション (リモート用)。
- * point をテーブル天板の中心とし、「point → 自分の頭」の水平方向が、共有座標系での
- * 「原点 → 自分の席」の方向と一致するように回転を決める。
- */
-export function frameFromOnePoint(point: Vector3, viewer: Vector3, seat: Seat): Matrix4 {
-  let dx = viewer.x - point.x;
-  let dz = viewer.z - point.z;
-  if (Math.hypot(dx, dz) < 1e-3) {
-    dx = seat.x;
-    dz = seat.z;
-  }
-  const yaw = heading(dx, dz) - heading(seat.x, seat.z);
-  return compose(point, yaw);
+/** Direction from the room origin towards a seat (falls back to "behind" the seat's facing). */
+function seatDirection(seat: SeatSpec): [number, number] {
+  if (Math.hypot(seat.x, seat.z) > 1e-3) return [seat.x, seat.z];
+  const [fx, fz] = seatForward(seat.yaw);
+  return [-fx, -fz];
 }
 
 /**
- * 2 点キャリブレーション (同室用)。
- * 原点 = 2 点の中点、共有座標系の +X = A→B の水平方向。高さは 2 点の平均 (= 天板面)。
- * 例: テーブルの左右の短辺の中点を A, B としてタッチすれば、原点がテーブル中心になる。
+ * One-point placement (remote). `point` becomes the room origin (the centre of your real table for
+ * table anchors; projected to the floor for floor anchors). The rotation makes the horizontal
+ * direction point → your head match the direction origin → your seat in the shared frame.
+ */
+export function frameFromOnePoint(point: Vector3, viewer: Vector3, seat: SeatSpec, anchor: AnchorSpec): Matrix4 {
+  const origin = point.clone();
+  if (anchor.kind === 'floor') origin.y = 0;
+  const [sx, sz] = seatDirection(seat);
+  let dx = viewer.x - point.x;
+  let dz = viewer.z - point.z;
+  if (Math.hypot(dx, dz) < 1e-3) {
+    dx = sx;
+    dz = sz;
+  }
+  return compose(origin, heading(dx, dz) - heading(sx, sz));
+}
+
+/**
+ * Two-point calibration (colocated). Origin = midpoint, shared +X = horizontal direction A → B,
+ * height = average of both points. Touching the middle of the two short edges of a table puts the
+ * origin at the table centre.
  */
 export function frameFromTwoPoints(a: Vector3, b: Vector3): Matrix4 {
   const origin = new Vector3().addVectors(a, b).multiplyScalar(0.5);
   const dx = b.x - a.x;
   const dz = b.z - a.z;
-  // R_y(θ)·(1,0,0) = (cosθ, 0, -sinθ) を (dx, dz) の向きに合わせる
-  const yaw = Math.atan2(-dz, dx);
-  return compose(origin, yaw);
+  // Align R_y(θ)·(1,0,0) = (cosθ, 0, -sinθ) with (dx, dz).
+  return compose(origin, Math.atan2(-dz, dx));
 }
 
-/** XR 開始直後の仮配置: 頭の正面・席の距離にテーブルを置く。 */
-export function frameInFrontOfViewer(head: Vector3, headQuat: Quaternion, seat: Seat): Matrix4 {
+/**
+ * Initial placement when entering XR: put the viewer at their seat, looking the way the seat faces.
+ * For table anchors the table top goes ~50 cm below eye level (0.6–1.05 m), so it suits both
+ * sitting and standing users; floor anchors sit on the local floor.
+ */
+export function frameInFrontOfViewer(head: Vector3, headQuat: Quaternion, seat: SeatSpec, anchor: AnchorSpec): Matrix4 {
   const fwd = new Vector3(0, 0, -1).applyQuaternion(headQuat);
   fwd.y = 0;
   if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
   fwd.normalize();
-  const dist = Math.max(0.5, Math.hypot(seat.x, seat.z));
-  const center = head.clone().addScaledVector(fwd, dist);
-  // 座っていれば目線の 45cm 下、立っていれば 1m 前後の高さに天板
-  center.y = Math.min(Math.max(head.y - 0.5, 0.6), 1.05);
-  return frameFromOnePoint(center, head, seat);
+  const [sfx, sfz] = seatForward(seat.yaw);
+  const yaw = heading(fwd.x, fwd.z) - heading(sfx, sfz);
+  const r = new Vector3(seat.x, 0, seat.z).applyAxisAngle(UP, yaw);
+  const origin = new Vector3(head.x - r.x, 0, head.z - r.z);
+  origin.y = anchor.kind === 'table' ? Math.min(Math.max(head.y - 0.5, 0.6), 1.05) : 0;
+  return compose(origin, yaw);
 }
 
-/** デスクトップ用: ローカル原点 = 床、テーブル中心がその真上。 */
-export function desktopFrame(): Matrix4 {
-  return compose(new Vector3(0, TABLE.height, 0), 0);
+/** Desktop: the local origin is the floor and the room anchor sits floorOffset above it. */
+export function desktopFrame(anchor: AnchorSpec): Matrix4 {
+  return compose(new Vector3(0, anchor.floorOffset, 0), 0);
 }
 
 export type CalibrationKind = 'auto' | 'one-point' | 'two-point' | 'desktop';
@@ -89,7 +104,7 @@ export class SharedFrame {
   constructor() {
     this.root.name = 'sharedRoot';
     this.root.matrixAutoUpdate = false;
-    this.set(desktopFrame(), 'desktop');
+    this.set(desktopFrame({ kind: 'table', floorOffset: 0.72 }), 'desktop');
   }
 
   /** 新しいキャリブレーション結果を適用する。XR 中なら次のフレームでアンカーを張る。 */
