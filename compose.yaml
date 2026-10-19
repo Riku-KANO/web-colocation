@@ -6,7 +6,8 @@ services:
   app:
     build: .
     image: web-colocation:local
-    ports: ["8080:8080"]
+    # Local only: browsers allow WebXR on localhost, headsets need HTTPS (docs/getting-started.md).
+    ports: ["127.0.0.1:8080:8080"]
     environment:
       COLO_CONFIG: /config/config.yaml
       COLO_STORAGE_DRIVER: file
@@ -28,10 +29,11 @@ services:
   coturn:
     profiles: [turn]
     image: coturn/coturn:4.7.0
+    # Local only (external-ip is 127.0.0.1); set TURN_SECRET instead of the demo default.
     ports:
-      - "3478:3478/udp"
-      - "3478:3478/tcp"
-      - "49160-49200:49160-49200/udp"
+      - "127.0.0.1:3478:3478/udp"
+      - "127.0.0.1:3478:3478/tcp"
+      - "127.0.0.1:49160-49200:49160-49200/udp"
     command:
       - -n
       - --log-file=stdout
@@ -46,11 +48,18 @@ services:
       - --no-cli
       - --no-tls
       - --no-dtls
-      # Never relay to private / link-local / metadata addresses.
+      # Never relay to private / shared / link-local / metadata / multicast addresses.
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
       - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
       - --denied-peer-ip=172.16.0.0-172.31.255.255
       - --denied-peer-ip=192.168.0.0-192.168.255.255
-      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=224.0.0.0-255.255.255.255
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 
 volumes:
   data: {}

@@ -36,9 +36,11 @@ or blocked by the Content-Security-Policy (add the origin to `assets.allowedOrig
 **Controller models do not appear (closed network).**
 They are loaded from jsDelivr. Self-host them and set `xr.inputProfilesPath`, or set it to `none`.
 
-**CSP violations in the console.**
-`server.csp` is `report-only` by default: nothing is blocked yet. Add missing origins (models,
-logo) to the config, then switch to `enforce`.
+**CSP violations in the console, or a model/logo/controller does not load.**
+`server.csp` is `enforce` by default. The policy allows the origins in the config (models in
+`assets.allowedOrigins`, an https `branding.logo`, `xr.inputProfilesPath`); add what is missing
+there. To find everything a custom setup needs, set `server.csp: report-only`, use the app and
+read the violations in the browser console, then go back to `enforce`.
 
 **"The room is full."**
 `rules.maxParticipants` or the number of seats in the template limits the room.

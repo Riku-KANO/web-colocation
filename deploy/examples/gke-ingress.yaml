@@ -10,6 +10,10 @@
 config:
   branding:
     productName: Acme XR Rooms
+  server:
+    # Google Cloud load balancers append "<client>,<load balancer>" to X-Forwarded-For
+    # (add 1 with oauth2Proxy.enabled).
+    trustedProxyHops: 2
 
 ingress:
   enabled: true

@@ -25,7 +25,12 @@ export interface HttpContext {
 export interface HandlerOptions {
   /** Directory with the built SPA; null in development (Vite serves it). */
   staticDir: string | null;
+  /** Also serve /metrics here (off when a separate health port serves it). */
+  publicMetrics?: boolean;
 }
+
+/** Operator files can be anything (SVG, HTML...): never let them run scripts in our origin. */
+const ASSET_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'";
 
 export type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
@@ -35,6 +40,8 @@ export function documentHeaders(): Record<string, string> {
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'same-origin',
     'cross-origin-opener-policy': 'same-origin',
+    // Also covered by CSP frame-ancestors, which browsers ignore in report-only mode.
+    'x-frame-options': 'SAMEORIGIN',
     'permissions-policy': 'xr-spatial-tracking=(self), microphone=(self), camera=(), geolocation=()',
   };
 }
@@ -69,6 +76,7 @@ export function createHttpHandler(ctx: HttpContext, opts: HandlerOptions): Handl
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = decodePath(url.pathname);
     if (path === null) return text(res, 400, 'bad request\n');
+    if (path === '/metrics' && !opts.publicMetrics) return text(res, 404, 'not found\n');
     if (await health(req, res)) return true;
     const isRead = req.method === 'GET' || req.method === 'HEAD';
 
@@ -82,9 +90,7 @@ export function createHttpHandler(ctx: HttpContext, opts: HandlerOptions): Handl
       if (!isRead) return text(res, 405, 'method not allowed\n');
       const assets = ctx.registry.config.assets;
       const file = assets.dir ? await resolveInside(assets.dir, path.slice('/room-assets/'.length)) : null;
-      const extra: Record<string, string> = { 'access-control-allow-origin': '*' };
-      // SVGs can carry scripts: never let them run in our origin.
-      if (file?.toLowerCase().endsWith('.svg')) extra['content-security-policy'] = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
+      const extra: Record<string, string> = { 'access-control-allow-origin': '*', 'content-security-policy': ASSET_CSP };
       if (file && (await sendFile(req, res, file, { cacheControl: 'public, max-age=300', extraHeaders: extra, maxBytes: assets.maxModelBytes }))) {
         return true;
       }

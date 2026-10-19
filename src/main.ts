@@ -18,7 +18,7 @@ const FALLBACK_CONFIG: ClientConfig = {
   voiceEnabled: true,
   xr: { inputProfilesPath: null },
   models: { allowedOrigins: [], maxBytes: 25 * 1024 * 1024 },
-  allowServerOverride: true,
+  allowServerOverride: false,
 };
 
 async function fetchClientConfig(): Promise<ClientConfig> {

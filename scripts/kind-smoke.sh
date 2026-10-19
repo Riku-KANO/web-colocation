@@ -80,6 +80,7 @@ hl upgrade --install colo-sso "$CHART" -n "$NS" -f "$ROOT/deploy/examples/local-
   --set oauth2Proxy.oidcIssuerUrl=http://dex.$NS.svc.cluster.local:5556/dex \
   --set oauth2Proxy.clientId=colo \
   --set oauth2Proxy.clientSecret=colo-test-secret \
+  --set 'oauth2Proxy.emailDomains={example.com}' \
   --set oauth2Proxy.redirectUrl=http://colo-sso-web-colocation.$NS.svc.cluster.local/oauth2/callback \
   --set 'oauth2Proxy.extraArgs={--cookie-secure=false}' \
   --wait --timeout 180s >/dev/null

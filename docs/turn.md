@@ -56,11 +56,18 @@ max-port=65535
 external-ip=<public IP>
 fingerprint
 no-cli
-# never relay into private or metadata networks
+# never relay into private, shared (CGNAT/Tailscale), loopback, link-local/metadata or multicast ranges
+denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
 denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
-denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=224.0.0.0-255.255.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 ```
 
 `docker compose --profile turn up` starts a local coturn for experiments

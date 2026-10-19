@@ -8,8 +8,9 @@
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import type { Duplex } from 'node:stream';
 import { createServerApp } from './app.ts';
-import { isLoopbackHost } from './auth.ts';
+import { trustedHeadersProblem } from './auth.ts';
 import { loadConfig, runtimeFromEnv } from './config/load.ts';
 import { watchConfig } from './config/watch.ts';
 import { createFileStore } from './fileStore.ts';
@@ -35,12 +36,8 @@ try {
 const log = createLogger(runtime.logLevel, runtime.logFormat);
 const config = loaded.config;
 
-if (config.auth.mode === 'trusted-headers' && !isLoopbackHost(runtime.host) && !config.auth.allowNonLoopback) {
-  fatal(
-    `auth.mode is "trusted-headers" but HOST=${runtime.host} is not a loopback address. ` +
-      'Run the app behind the auth proxy on 127.0.0.1 (the Helm chart does this), or set auth.allowNonLoopback: true if the network guarantees that only the proxy can reach it.',
-  );
-}
+const unsafe = trustedHeadersProblem(config.auth, runtime.host);
+if (unsafe) fatal(unsafe);
 
 let store;
 try {
@@ -48,7 +45,16 @@ try {
 } catch (e) {
   fatal(`storage.dir ${config.storage.dir} is not usable (${(e as Error).message}). Mount a writable volume there or use storage.driver: memory.`);
 }
-const app = createServerApp({ loaded, log, env: process.env, store, staticDir: runtime.staticDir });
+const app = createServerApp({
+  loaded,
+  log,
+  env: process.env,
+  store,
+  staticDir: runtime.staticDir,
+  listenHost: runtime.host,
+  // With a separate health port, metrics stay off the public port.
+  publicMetrics: runtime.healthPort === null,
+});
 
 const serve = (handler: Handler) => (req: http.IncomingMessage, res: http.ServerResponse) => {
   handler(req, res)
@@ -67,6 +73,10 @@ const server =
     ? https.createServer({ cert: readFileSync(process.env.TLS_CERT), key: readFileSync(process.env.TLS_KEY) }, serve(app.handler))
     : http.createServer(serve(app.handler));
 app.attach(server);
+// Upgrades for other paths are not ours: close them instead of leaving the sockets open.
+server.on('upgrade', (req: http.IncomingMessage, socket: Duplex) => {
+  if (new URL(req.url ?? '/', 'http://localhost').pathname !== '/ws') socket.destroy();
+});
 server.listen(runtime.port, runtime.host, () => {
   log.info('listening', {
     url: `${server instanceof https.Server ? 'https' : 'http'}://${runtime.host}:${runtime.port}`,

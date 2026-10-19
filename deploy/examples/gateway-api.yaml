@@ -1,6 +1,12 @@
 # Gateway API (Envoy Gateway, GKE Gateway, AWS LBC Gateway, NGINX Gateway Fabric, ...).
 # The Gateway (listener, TLS certificate) is managed by your platform team.
 # Make sure the implementation allows long-lived WebSocket connections (idle/request timeouts).
+config:
+  server:
+    # Proxies that append to X-Forwarded-For before the app, used for passcode rate limiting:
+    # 1 for Envoy Gateway and most single-proxy setups, 2 for GKE Gateway. Add 1 with oauth2Proxy.enabled.
+    trustedProxyHops: 1
+
 httpRoute:
   enabled: true
   parentRefs:

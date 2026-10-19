@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import type { IncomingMessage } from 'node:http';
+import { isIPv6 } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CLOSE_FATAL, CLOSE_RESTART, PROTOCOL_VERSION, type ServerMsg } from '../shared/protocol.ts';
@@ -24,6 +25,8 @@ export interface ServerContext {
 export interface ColocationServerOptions {
   path?: string;
   heartbeatMs?: number;
+  /** Close sockets that have not sent `hello` within this time (default 10 s). */
+  helloTimeoutMs?: number;
 }
 
 export interface ColocationServer {
@@ -34,6 +37,8 @@ export interface ColocationServer {
 }
 
 const MAX_MESSAGES_PER_SECOND = 200;
+/** Connections that have not joined a room by then are closed. */
+const HELLO_TIMEOUT_MS = 10_000;
 /** Clients whose send buffer exceeds this are dropped (they recover from a snapshot on reconnect). */
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
@@ -51,13 +56,38 @@ export function isOriginAllowed(origin: string | undefined, host: string | undef
   return server.allowedOrigins.some((a) => a === '*' || a.replace(/\/$/, '') === o.origin);
 }
 
-export function clientAddress(req: IncomingMessage, trustForwardedFor: boolean): string {
-  if (trustForwardedFor) {
+/** Number of proxies in front of the app that append to X-Forwarded-For. */
+export function proxyHops(server: AppConfig['server']): number {
+  return server.trustedProxyHops ?? (server.trustForwardedFor ? 1 : 0);
+}
+
+/**
+ * Address used to rate-limit a client. Each of the `hops` proxies in front of the app appends the
+ * address it saw to X-Forwarded-For, so the client is the entry that many places from the right;
+ * entries further left are whatever the client sent and cannot be trusted.
+ */
+export function clientAddress(req: IncomingMessage, hops: number): string {
+  let addr = req.socket.remoteAddress ?? 'unknown';
+  if (hops > 0) {
     const xff = req.headers['x-forwarded-for'];
-    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(',')[0]?.trim();
-    if (first) return first;
+    const list = (Array.isArray(xff) ? xff.join(',') : (xff ?? '')).split(',').map((a) => a.trim()).filter(Boolean);
+    if (list.length) addr = list[Math.max(0, list.length - hops)]!;
   }
-  return req.socket.remoteAddress ?? 'unknown';
+  return addressKey(addr);
+}
+
+/** IPv4 as is; IPv6 grouped by /64, since one client usually controls a whole /64. */
+export function addressKey(addr: string): string {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(addr);
+  if (mapped) return mapped[1]!;
+  const ip = addr.replace(/%.*$/, '');
+  if (!isIPv6(ip)) return addr;
+  const size = (groups: string[]) => groups.reduce((n, g) => n + (g.includes('.') ? 2 : 1), 0);
+  const [head = '', tail] = ip.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? h : [...h, ...Array<string>(8 - size(h) - size(t)).fill('0'), ...t];
+  return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
 }
 
 function reject(socket: Duplex, status: number, text: string): void {
@@ -96,10 +126,14 @@ export function attachColocationServer(
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage, identity: Identity | null) => {
     const peerId = randomUUID().replaceAll('-', '').slice(0, 12);
-    const clientKey = clientAddress(req, registry.config.server.trustForwardedFor);
+    const clientKey = clientAddress(req, proxyHops(registry.config.server));
     let room: Room | null = null;
     let joining = false;
     let closed = false;
+    const helloTimer = setTimeout(() => {
+      if (!room && !joining) ws.terminate();
+    }, options.helloTimeoutMs ?? HELLO_TIMEOUT_MS);
+    helloTimer.unref?.();
     let windowStart = Date.now();
     let count = 0;
     alive.set(ws, true);
@@ -175,6 +209,7 @@ export function attachColocationServer(
 
     ws.on('close', () => {
       closed = true;
+      clearTimeout(helloTimer);
       if (!room) return;
       registry.leave(room, peerId);
       log.info('peer left', { room: room.id, peer: peerId });

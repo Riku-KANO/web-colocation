@@ -1,12 +1,20 @@
 // End-to-end tests in real browsers: two participants, the lobby, the XR emulator and host settings.
 
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type W = Window & { __colo: any; __xrDevice: any };
 
+// Contexts made from the shared `browser` outlive the test unless closed. Pages left open keep
+// rendering and starve later tests on CI runners, where WebGL is software-rendered.
+const contexts: BrowserContext[] = [];
+test.afterEach(async () => {
+  await Promise.all(contexts.splice(0).map((c) => c.close()));
+});
+
 async function open(browser: Browser, path: string): Promise<Page> {
   const context = await browser.newContext();
+  contexts.push(context);
   const page = await context.newPage();
   page.on('pageerror', (e) => console.error(`[page error] ${e.message}`));
   await page.goto(path);
@@ -71,6 +79,8 @@ test('the lobby lists configured rooms and asks for passcodes', async ({ browser
 });
 
 test('XR (emulated Quest 3): a pen held in the hand writes on the board', async ({ browser }) => {
+  // Software WebGL on CI renders a few XR frames per second at best.
+  test.slow();
   const watcher = await join(browser, 'Watcher', 'e2e-xr');
   const xr = await join(browser, 'Quest', 'e2e-xr', '&emulate=quest3');
   await xr.getByRole('button', { name: 'Enter AR' }).click();
@@ -80,16 +90,23 @@ test('XR (emulated Quest 3): a pen held in the hand writes on the board', async 
     const w = window as unknown as W;
     const app = w.__colo;
     const r = w.__xrDevice.controllers.right;
-    const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
-    await wait(500);
+    const session = app.renderer.xr.getSession();
+    // Wait in XR frames, not milliseconds, so every pose is seen by the input loop however slow
+    // the machine renders.
+    const frames = (n: number) =>
+      new Promise<void>((res) => {
+        const step = () => (--n <= 0 ? res() : session.requestAnimationFrame(step));
+        session.requestAnimationFrame(step);
+      });
+    await frames(5);
     app.scene.updateMatrixWorld();
     const pen = app.objects.get('pen-black').root;
     const V = pen.position.constructor;
     const p = pen.getWorldPosition(new V());
     r.position.set(p.x, p.y, p.z);
-    await wait(200);
+    await frames(3);
     r.updateButtonValue('squeeze', 1);
-    await wait(300);
+    await frames(3);
     // Point the controller at the board and sweep the pen tip across it.
     const root = app.frame.root;
     const centre = root.localToWorld(new V(1.0, 0.5, 0));
@@ -100,13 +117,13 @@ test('XR (emulated Quest 3): a pen held in the hand writes on the board', async 
       const onBoard = root.localToWorld(new V(1.0, 0.4 + 0.02 * i, -0.3 + 0.04 * i));
       const c = onBoard.clone().addScaledVector(toward, 0.03 + 0.078 - 0.002);
       r.position.set(c.x, c.y, c.z);
-      await wait(40);
+      await frames(2);
     }
     const away = root.localToWorld(new V(0.5, 0.5, 0));
     r.position.set(away.x, away.y, away.z);
-    await wait(200);
+    await frames(3);
     r.updateButtonValue('squeeze', 0);
-    await wait(200);
+    await frames(3);
   });
   await expect.poll(() => watcher.evaluate(() => (window as unknown as W).__colo.boards.strokeCount)).toBe(1);
   expect(await xr.evaluate(() => (window as unknown as W).__colo.loopErrors)).toBe(0);

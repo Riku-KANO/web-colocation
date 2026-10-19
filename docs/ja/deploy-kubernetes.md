@@ -103,8 +103,10 @@ oauth2Proxy:
   provider: google                # google | entra-id | oidc ...
   clientId: ...
   existingSecret: colo-oauth2     # キー: client-secret, cookie-secret
-  emailDomains: [acme.example]
+  emailDomains: [acme.example]    # 必須 (または allowedGroups)
 ```
+
+`emailDomains` か `allowedGroups` のどちらかが必須です。どちらも無いと、チャートは描画を拒否します。Google や GitHub のような公開プロバイダで、すべてのアカウントを通してしまう事故を防ぐためです。`["*"]` は、プロバイダ自体が自社に限られている場合 (シングルテナントの Entra ID など) にだけ使ってください。
 
 Secret は次のように作ります。
 
@@ -117,6 +119,8 @@ kubectl -n xr create secret generic colo-oauth2 \
 - IdP にはリダイレクト URI `https://<ホスト>/oauth2/callback` を登録します。
 - oauth2-proxy は同じ Pod のネイティブサイドカーとして動きます。
 - アプリは `127.0.0.1` だけで待ち受けるので、外部から識別ヘッダを偽装できません。
+
+ロードバランサーの後ろでは、`config.server.trustedProxyHops` に、`X-Forwarded-For` に追記するプロキシの数を設定してください (AWS ALB は 1、Google Cloud のロードバランサーは 2。oauth2-proxy サイドカーを使う場合はさらに +1)。設定しないと、パスコードの試行回数制限が全員に共通でかかります。そのため、誰か 1 人が間違え続けると、全員が 5 分間入れなくなります。
 
 主催者 (hosts / admins)、入室の許可リスト、パスコードについては [auth.md (英語)](../auth.md) を参照してください。
 

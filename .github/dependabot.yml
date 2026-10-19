@@ -13,3 +13,10 @@ updates:
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }
+  # oauth2-proxy (the sign-in boundary) and other images referenced by the chart.
+  - package-ecosystem: helm
+    directory: /deploy/helm/web-colocation
+    schedule: { interval: weekly }
+  - package-ecosystem: docker-compose
+    directories: [/, /deploy/compose]
+    schedule: { interval: weekly }

@@ -81,9 +81,9 @@ changed by hosts in the app. The server enforces them; the UI greys out what you
 Generate a hash and put it in the room definition:
 
 ```bash
-npm run hash-passcode -- 'correct horse battery staple'
+npm run hash-passcode            # asks for the passcode without echoing it
 # or with Docker:
-docker run --rm ghcr.io/OWNER/web-colocation node scripts/hash-passcode.ts 'correct horse battery staple'
+docker run --rm -it ghcr.io/OWNER/web-colocation node scripts/hash-passcode.ts
 ```
 
 ```yaml
@@ -140,6 +140,7 @@ use simple built-in shapes.
 
 ### Security headers
 
-`server.csp` controls the Content-Security-Policy of the app page. It starts as `report-only`;
-check the browser console for violations, then switch to `enforce`. `server.publicUrl` and
+`server.csp` controls the Content-Security-Policy of the app page and is `enforce` by default.
+`report-only` logs violations in the browser console without blocking, which helps when adding
+model or logo origins. The page also sends `X-Frame-Options: SAMEORIGIN`. `server.publicUrl` and
 `server.allowedOrigins` decide which pages may open WebSockets (same-host pages always can).

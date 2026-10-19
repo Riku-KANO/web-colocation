@@ -72,7 +72,9 @@ oauth2Proxy:
   cookieSecret: ""
   # Public callback URL, e.g. https://xr.example.com/oauth2/callback (defaults from ingress/httpRoute host).
   redirectUrl: ""
-  emailDomains: ["*"]
+  # Who may sign in: email domains (e.g. [acme.example]) and/or groups. One of them is required;
+  # ["*"] lets in every account the provider accepts (any Google/GitHub user for public providers).
+  emailDomains: []
   allowedGroups: []
   # Use native sidecars (Kubernetes >= 1.29). Set false to run it as a regular container.
   nativeSidecar: true
