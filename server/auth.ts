@@ -71,6 +71,18 @@ export function isLoopbackHost(host: string): boolean {
   return host === '127.0.0.1' || host === '::1' || host === 'localhost' || host.startsWith('127.');
 }
 
+/**
+ * Identity headers can be trusted only if nothing but the auth proxy can reach the app. Returns
+ * why `config` is unsafe to run on `host`, or null. Checked at startup and on every reload.
+ */
+export function trustedHeadersProblem(auth: AppConfig['auth'], host: string): string | null {
+  if (auth.mode !== 'trusted-headers' || isLoopbackHost(host) || auth.allowNonLoopback) return null;
+  return (
+    `auth.mode is "trusted-headers" but the app listens on ${host}, which is not a loopback address. ` +
+    'Run the app behind the auth proxy on 127.0.0.1 (the Helm chart does this), or set auth.allowNonLoopback: true if the network guarantees that only the proxy can reach it.'
+  );
+}
+
 const norm = (s: string) => s.trim().toLowerCase();
 
 export function isAdmin(identity: Identity | null, auth: AppConfig['auth']): boolean {
@@ -88,7 +100,8 @@ export function isAllowed(
   if (!allowedDomains.length && !allowedUsers.length && !allowedGroups.length) return true;
   if (!identity) return false;
   const email = identity.email ?? '';
-  const domain = email.includes('@') ? email.split('@')[1] : '';
+  // The domain follows the last @ ("a@acme.com@evil.example" is not at acme.com).
+  const domain = email.includes('@') ? email.slice(email.lastIndexOf('@') + 1) : '';
   if (domain && allowedDomains.some((d) => norm(d) === domain)) return true;
   if (allowedUsers.some((u) => norm(u) === email || (identity.user && norm(u) === norm(identity.user)))) return true;
   return identity.groups.some((g) => allowedGroups.includes(g));

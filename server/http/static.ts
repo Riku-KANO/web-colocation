@@ -1,6 +1,7 @@
 // Safe static file serving for the built SPA (dist/) and operator assets (/room-assets/).
 
 import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { realpath, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, sep } from 'node:path';
@@ -86,6 +87,8 @@ export async function sendFile(req: IncomingMessage, res: ServerResponse, file: 
     res.end();
     return true;
   }
-  createReadStream(file).pipe(res);
+  // The file can disappear or become unreadable after stat (e.g. a ConfigMap update): end the
+  // response instead of crashing on an unhandled stream error.
+  await pipeline(createReadStream(file), res).catch(() => res.destroy());
   return true;
 }

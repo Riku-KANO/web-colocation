@@ -5,7 +5,7 @@ import type { ClientMsg, ErrorCode, PeerInfo } from '../shared/protocol.ts';
 import type { ClientConfig, LobbyRoom } from '../shared/clientConfig.ts';
 import type { RoomConfig, RoomSettingsPatch } from '../shared/roomConfig.ts';
 import { PROTOCOL_VERSION } from '../shared/protocol.ts';
-import { LIMITS } from '../shared/validate.ts';
+import { cleanText, LIMITS } from '../shared/validate.ts';
 import { isAdmin, isAllowed, type Identity } from './auth.ts';
 import type { LoadedConfig } from './config/load.ts';
 import { buildRoomConfig, mergeRules } from './config/resolve.ts';
@@ -14,7 +14,7 @@ import type { Logger } from './log.ts';
 import type { Metrics } from './metrics.ts';
 import { hashPasscode, verifyPasscode } from './passcode.ts';
 import { FailureLimiter } from './rateLimit.ts';
-import { Room, type PeerConn } from './room.ts';
+import { PointBudget, Room, type PeerConn } from './room.ts';
 import { MemoryStore, type HostSettings, type Store, type StoredRoom } from './store.ts';
 import { iceConfigFor } from './turn.ts';
 
@@ -34,12 +34,16 @@ export interface RegistryOptions {
 
 export type JoinResult = { room: Room; info: PeerInfo } | { error: ErrorCode };
 
-/** Ad-hoc room names: printable, trimmed, 1..64 characters. */
+/** Passcode checks (scrypt) running at once; more are refused so guessing cannot hog the CPU. */
+const MAX_PENDING_PASSCODE_CHECKS = 8;
+/** Minimum time between two settings changes in one room. */
+const SETTINGS_INTERVAL_MS = 1000;
+
+/** Ad-hoc room names: printable, trimmed, 1..64 characters, no invisible formatting marks. */
 export function normalizeRoomId(raw: string): string | null {
   const id = raw.normalize('NFC').trim();
   if (!id || id.length > LIMITS.roomLength) return null;
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f-\u009f/\\]/.test(id)) return null;
+  if (cleanText(id) !== id || /[/\\]/.test(id)) return null;
   return id;
 }
 
@@ -51,7 +55,14 @@ export class RoomRegistry {
   private readonly env: NodeJS.ProcessEnv;
   private readonly emptyRoomTtlMs: number;
   private readonly saveDelayMs: number;
+  /** Settings in effect (may include unsaved changes by first-joiner hosts of configured rooms). */
   private readonly settings = new Map<string, HostSettings>();
+  /** Settings written to storage. */
+  private readonly saved = new Map<string, HostSettings>();
+  private readonly settingsBusy = new Set<string>();
+  private readonly settingsChangedAt = new Map<string, number>();
+  private pendingPasscodeChecks = 0;
+  private readonly points: PointBudget;
   private readonly creating = new Map<string, Promise<Room | ErrorCode>>();
   private readonly disposeTimers = new Map<string, NodeJS.Timeout>();
   private readonly saveTimers = new Map<string, NodeJS.Timeout>();
@@ -65,6 +76,7 @@ export class RoomRegistry {
     this.store = opts.store ?? new MemoryStore();
     this.emptyRoomTtlMs = opts.emptyRoomTtlMs ?? 10 * 60 * 1000;
     this.saveDelayMs = opts.saveDelayMs ?? 2000;
+    this.points = new PointBudget(opts.loaded.config.server.maxStrokePoints);
     opts.metrics.gauge('colo_rooms', 'Rooms in memory', () => this.rooms.size);
     opts.metrics.gauge('colo_participants', 'Connected participants', () =>
       [...this.rooms.values()].reduce((n, r) => n + r.peerCount, 0),
@@ -99,27 +111,38 @@ export class RoomRegistry {
     const room = await this.getOrCreate(roomId, def);
     if (typeof room === 'string') return { error: room };
 
+    // A refused join must not leave the room it may have just created in memory.
+    const refuse = (error: ErrorCode): JoinResult => {
+      this.scheduleDispose(room);
+      return { error };
+    };
     const hash = def?.passcodeHash ?? this.settings.get(roomId)?.passcodeHash;
     if (hash && !configuredHost) {
       const key = `${identity?.email ?? clientKey}|${roomId}`;
-      if (this.failures.blocked(key)) return { error: 'rate-limited' };
-      if (!hello.passcode) return { error: 'passcode-required' };
-      if (!(await verifyPasscode(hello.passcode, hash))) {
-        this.failures.fail(key);
-        return { error: 'passcode-invalid' };
+      if (this.failures.blocked(key)) return refuse('rate-limited');
+      if (!hello.passcode) return refuse('passcode-required');
+      if (this.pendingPasscodeChecks >= MAX_PENDING_PASSCODE_CHECKS) return refuse('rate-limited');
+      // Count the attempt before awaiting, so concurrent guesses cannot all pass the check above.
+      this.failures.fail(key);
+      this.pendingPasscodeChecks++;
+      let ok: boolean;
+      try {
+        ok = await verifyPasscode(hello.passcode, hash);
+      } finally {
+        this.pendingPasscodeChecks--;
       }
+      if (!ok) return refuse('passcode-invalid');
       this.failures.reset(key);
     }
 
     // Everything above may have awaited: re-check capacity right before joining.
     const full = room.admissionError();
-    if (full) {
-      this.scheduleDispose(room);
-      return { error: full };
-    }
+    if (full) return refuse(full);
     const fromIdentity = identity && !auth.allowDisplayNameOverride;
-    const name = fromIdentity ? identity.name : hello.name.trim() || identity?.name || '';
-    const info = room.join(peerId, conn, { hello, name, verified: !!identity, configuredHost, identity });
+    const name = fromIdentity ? identity.name : hello.name || identity?.name || '';
+    // "Verified" means the name shown is the one from the identity provider, not a typed one.
+    const verified = !!identity && name === identity.name;
+    const info = room.join(peerId, conn, { hello, name, verified, configuredHost, identity });
     this.cancelDispose(roomId);
     this.sendIce(room, peerId);
     return { room, info };
@@ -164,6 +187,7 @@ export class RoomRegistry {
         if (r.adhoc && r.updatedAt < cutoff && !this.rooms.has(r.roomId) && !this.definition(r.roomId)) {
           await this.store.delete(r.roomId);
           this.settings.delete(r.roomId);
+          this.saved.delete(r.roomId);
           removed++;
         }
       }
@@ -254,10 +278,17 @@ export class RoomRegistry {
     } catch (e) {
       this.log.error('failed to load room state', { room: roomId, error: String(e) });
     }
-    if (stored) this.settings.set(roomId, stored.settings);
+    if (stored) {
+      // Settings saved while this id was an ad-hoc room (by whoever created it) do not carry over
+      // to a room defined in the configuration.
+      const settings = stored.adhoc && def ? {} : stored.settings;
+      this.settings.set(roomId, settings);
+      this.saved.set(roomId, settings);
+    }
     const config = this.roomConfig(roomId, def);
     const room = new Room(config, {
       hostMode: def?.hosts.length ? 'configured' : 'first-joiner',
+      points: this.points,
       hooks: {
         onChange: () => this.scheduleSave(room),
         applySettings: (peerId, patch) => void this.applySettings(room, peerId, patch),
@@ -279,7 +310,29 @@ export class RoomRegistry {
   }
 
   private async applySettings(room: Room, peerId: string, patch: RoomSettingsPatch): Promise<void> {
+    const now = Date.now();
+    if (this.settingsBusy.has(room.id) || now - (this.settingsChangedAt.get(room.id) ?? 0) < SETTINGS_INTERVAL_MS) {
+      return room.notify(peerId, { t: 'error', code: 'invalid-settings', message: 'too many changes, try again in a moment' });
+    }
+    this.settingsBusy.add(room.id);
+    try {
+      await this.changeSettings(room, peerId, patch);
+    } finally {
+      this.settingsBusy.delete(room.id);
+      this.settingsChangedAt.set(room.id, Date.now());
+    }
+  }
+
+  private async changeSettings(room: Room, peerId: string, patch: RoomSettingsPatch): Promise<void> {
     const def = this.definition(room.id);
+    // In a room from the configuration, a host who is only host because they joined first may
+    // adjust the room for the meeting, but not lock it, rename it in the lobby or change it for
+    // good: their changes are not saved and end when the room empties.
+    const identity = room.members().find((m) => m.id === peerId)?.identity ?? null;
+    const lasting = !def || this.isConfiguredHost(identity, def);
+    if (!lasting && (patch.title !== undefined || patch.passcode !== undefined)) {
+      return room.notify(peerId, { t: 'error', code: 'invalid-settings', message: 'only configured hosts can change the title or passcode of this room' });
+    }
     const current = this.settings.get(room.id) ?? {};
     const next: HostSettings = { ...current };
     if (patch.title !== undefined) next.title = patch.title;
@@ -299,7 +352,17 @@ export class RoomRegistry {
       // A passcode fixed in the config file (GitOps) always wins.
       if (def?.passcodeHash) return room.notify(peerId, { t: 'error', code: 'invalid-settings' });
       if (patch.passcode === null) delete next.passcodeHash;
-      else next.passcodeHash = await hashPasscode(patch.passcode);
+      else {
+        if (this.pendingPasscodeChecks >= MAX_PENDING_PASSCODE_CHECKS) {
+          return room.notify(peerId, { t: 'error', code: 'invalid-settings', message: 'server busy, try again' });
+        }
+        this.pendingPasscodeChecks++;
+        try {
+          next.passcodeHash = await hashPasscode(patch.passcode);
+        } finally {
+          this.pendingPasscodeChecks--;
+        }
+      }
     }
     if (this.rooms.get(room.id) !== room) return; // disposed while hashing
 
@@ -311,8 +374,9 @@ export class RoomRegistry {
       else this.settings.delete(room.id);
       return room.notify(peerId, { t: 'error', code: 'invalid-settings', message: 'not enough seats for everyone present' });
     }
+    if (lasting) this.saved.set(room.id, next);
     room.reconfigure(config);
-    this.log.info('room settings changed', { room: room.id, by: peerId, template: config.template });
+    this.log.info('room settings changed', { room: room.id, by: peerId, template: config.template, saved: lasting });
   }
 
   private scheduleSave(room: Room): void {
@@ -332,7 +396,7 @@ export class RoomRegistry {
         roomId: room.id,
         adhoc: !this.definition(room.id),
         updatedAt: Date.now(),
-        settings: this.settings.get(room.id) ?? {},
+        settings: this.saved.get(room.id) ?? {},
         state: room.exportState(),
       });
     } catch (e) {
@@ -363,6 +427,12 @@ export class RoomRegistry {
       void this.save(room).finally(() => {
         if (room.peerCount === 0 && this.rooms.get(room.id) === room) {
           this.rooms.delete(room.id);
+          room.releasePoints();
+          // Drop unsaved changes made for the meeting that just ended.
+          const saved = this.saved.get(room.id);
+          if (saved) this.settings.set(room.id, saved);
+          else this.settings.delete(room.id);
+          this.settingsChangedAt.delete(room.id);
           this.log.info('room disposed', { room: room.id });
         }
       });

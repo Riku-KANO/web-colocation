@@ -1,6 +1,6 @@
 // Content-Security-Policy for the app page, derived from the configuration so that model hosts,
-// the logo and the WebXR input-profile CDN keep working. Rolled out as report-only by default
-// (`server.csp`), switch to `enforce` once the browser console shows no violations.
+// the logo and the WebXR input-profile CDN keep working. Enforced by default (`server.csp`); use
+// report-only to find what a custom setup needs, the browser console lists the violations.
 
 import type { AppConfig } from '../config/schema.ts';
 
@@ -29,7 +29,8 @@ export function buildCsp(config: AppConfig, host: string | undefined): string {
     `script-src 'self' 'wasm-unsafe-eval'`,
     `style-src 'self'`,
     `img-src ${list("'self'", 'data:', 'blob:', logo, profiles, ...models)}`,
-    `connect-src ${list("'self'", ...sockets, profiles, ...models)}`,
+    // blob:/data: are not network destinations: three.js fetches embedded glTF images and buffers through them.
+    `connect-src ${list("'self'", 'blob:', 'data:', ...sockets, profiles, ...models)}`,
     `media-src 'self' blob:`,
     `worker-src 'self' blob:`,
     `font-src 'self'`,

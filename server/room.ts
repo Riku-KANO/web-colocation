@@ -55,6 +55,20 @@ export interface RoomOptions {
    */
   hostMode: 'configured' | 'first-joiner';
   hooks?: RoomHooks;
+  /** Stroke coordinates shared by all rooms of the process (bounds memory across rooms). */
+  points?: PointBudget;
+}
+
+/** A budget of stroke coordinates shared by several rooms. */
+export class PointBudget {
+  used = 0;
+  readonly max: number;
+  constructor(max: number) {
+    this.max = max;
+  }
+  get free(): number {
+    return Math.max(0, this.max - this.used);
+  }
 }
 
 interface PeerEntry {
@@ -81,13 +95,30 @@ export class Room {
   /** Insertion order = drawing order. */
   private readonly strokes = new Map<string, Stroke>();
   private strokePoints = 0;
+  private readonly points: PointBudget;
 
   constructor(config: RoomConfig, options: RoomOptions = { hostMode: 'first-joiner' }) {
     this.id = config.id;
     this.config = config;
     this.hostMode = options.hostMode;
     this.hooks = options.hooks ?? {};
+    this.points = options.points ?? new PointBudget(Infinity);
     this.resetObjectsFromConfig();
+  }
+
+  /** Stroke coordinates this room may still add (per-room and shared limits). */
+  private get pointRoom(): number {
+    return Math.min(LIMITS.ptsPerRoom - this.strokePoints, this.points.free);
+  }
+
+  private countPoints(delta: number): void {
+    this.strokePoints += delta;
+    this.points.used += delta;
+  }
+
+  /** Give the room's stroke coordinates back to the shared budget (the room is being dropped). */
+  releasePoints(): void {
+    this.countPoints(-this.strokePoints);
   }
 
   get peerCount(): number {
@@ -262,25 +293,27 @@ export class Room {
       }
       case 'stroke': {
         if (this.strokes.has(msg.id) || !this.config.boards.some((b) => b.id === msg.board)) return;
-        if (this.strokes.size >= LIMITS.strokesPerRoom || this.strokePoints >= LIMITS.ptsPerRoom) {
+        const room = this.pointRoom;
+        if (this.strokes.size >= LIMITS.strokesPerRoom || room < 2) {
           this.sendTo(peerId, { t: 'error', code: 'limit', message: 'whiteboard is full' });
           return;
         }
-        const pts = msg.pts.slice(0, LIMITS.ptsPerStroke);
+        const n = Math.min(msg.pts.length, LIMITS.ptsPerStroke, room);
+        const pts = msg.pts.slice(0, n - (n % 2));
         const s: Stroke = { id: msg.id, board: msg.board, author: peerId, color: msg.color, width: msg.width, pts, done: false };
         this.strokes.set(s.id, s);
-        this.strokePoints += pts.length;
+        this.countPoints(pts.length);
         this.broadcast({ t: 'stroke', stroke: s }, peerId);
         return;
       }
       case 'stroke-pts': {
         const s = this.strokes.get(msg.id);
         if (!s || s.author !== peerId || s.done) return;
-        const room = Math.min(LIMITS.ptsPerStroke - s.pts.length, LIMITS.ptsPerRoom - this.strokePoints);
+        const room = Math.min(LIMITS.ptsPerStroke - s.pts.length, this.pointRoom);
         if (room <= 1) return;
         const pts = msg.pts.length > room ? msg.pts.slice(0, room - (room % 2)) : msg.pts;
         s.pts.push(...pts);
-        this.strokePoints += pts.length;
+        this.countPoints(pts.length);
         this.broadcast({ t: 'stroke-pts', id: s.id, pts }, peerId);
         return;
       }
@@ -297,7 +330,7 @@ export class Room {
         for (const [id, s] of this.strokes) {
           if (s.board === msg.board) {
             this.strokes.delete(id);
-            this.strokePoints -= s.pts.length;
+            this.countPoints(-s.pts.length);
           }
         }
         this.broadcast({ t: 'board-clear', board: msg.board }, peerId);
@@ -340,7 +373,7 @@ export class Room {
     for (const [id, s] of this.strokes) {
       if (!boards.has(s.board)) {
         this.strokes.delete(id);
-        this.strokePoints -= s.pts.length;
+        this.countPoints(-s.pts.length);
       } else if (!s.done) s.done = true;
     }
     const taken = new Set<number>();
@@ -355,9 +388,10 @@ export class Room {
       p.info.seat = seat; // may exceed seats.length if the room shrank; clients wrap around
       taken.add(seat);
     }
-    const snapshot = this.snapshot();
-    for (const [id, p] of this.peers) {
-      this.sendTo(id, { t: 'config', epoch: this.epoch, config: this.config, self: p.info, snapshot });
+    // The snapshot can be megabytes: serialize it once, not once per participant.
+    const shared = JSON.stringify({ t: 'config', epoch: this.epoch, config: this.config, snapshot: this.snapshot() });
+    for (const p of this.peers.values()) {
+      p.conn.send(`${shared.slice(0, -1)},"self":${JSON.stringify(p.info)}}`);
     }
     this.hooks.onChange?.();
   }
@@ -390,9 +424,9 @@ export class Room {
     const boards = new Set(this.config.boards.map((b) => b.id));
     for (const s of state.strokes ?? []) {
       if (!boards.has(s.board) || this.strokes.has(s.id)) continue;
-      if (this.strokePoints + s.pts.length > LIMITS.ptsPerRoom) break;
+      if (s.pts.length > this.pointRoom) break;
       this.strokes.set(s.id, { ...s, done: true });
-      this.strokePoints += s.pts.length;
+      this.countPoints(s.pts.length);
     }
   }
 

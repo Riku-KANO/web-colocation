@@ -12,9 +12,13 @@ export const LIMITS = {
   ptsPerMessage: 2000,
   /** Coordinates per stroke. */
   ptsPerStroke: 20000,
-  strokesPerRoom: 5000,
-  /** Total stroke coordinates kept per room (keeps snapshots and stored state bounded). */
-  ptsPerRoom: 600_000,
+  strokesPerRoom: 2000,
+  /**
+   * Total stroke coordinates kept per room. Keeps the welcome snapshot (about 8 bytes per
+   * coordinate once quantized) well below the server's per-socket send buffer cap, and bounds
+   * memory and stored state.
+   */
+  ptsPerRoom: 200_000,
   /** Max absolute coordinate allowed in the shared frame (meters). */
   coord: 1000,
   /** WebRTC SDP (a few KB for a single audio track). */
@@ -36,6 +40,15 @@ function isObj(v: unknown): v is Obj {
 
 function str(v: unknown, max: number): string | null {
   return typeof v === 'string' && v.length <= max ? v : null;
+}
+
+/**
+ * Text shown to other people (names, titles): drops control characters and bidi/invisible
+ * formatting marks that could reorder or hide parts of the text, and trims it.
+ */
+export function cleanText(v: string): string {
+  // eslint-disable-next-line no-control-regex
+  return v.replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '').trim();
 }
 
 function id(v: unknown): string | null {
@@ -80,10 +93,11 @@ function parseAvatarPose(v: unknown): AvatarPose | null {
   return { head, hands: [l, r] };
 }
 
+/** Board coordinates, quantized like the client does (0.1 mm on a 1 m board) to keep state small. */
 function uvPoints(v: unknown): number[] | null {
   if (!Array.isArray(v) || v.length % 2 !== 0 || v.length > LIMITS.ptsPerMessage) return null;
   for (const x of v) if (!num(x, 2)) return null;
-  return v as number[];
+  return (v as number[]).map((x) => Math.round(x * 1e4) / 1e4);
 }
 
 /** Room epoch carried by state-changing messages. */
@@ -104,8 +118,8 @@ function settingsPatch(v: unknown): RoomSettingsPatch | null {
   const out: RoomSettingsPatch = {};
   if (v.title !== undefined) {
     const title = str(v.title, LIMITS.titleLength);
-    if (title === null || !title.trim()) return null;
-    out.title = title.trim();
+    if (title === null || !cleanText(title)) return null;
+    out.title = cleanText(title);
   }
   if (v.template !== undefined) {
     const template = id(v.template);
@@ -195,7 +209,7 @@ export function parseClientMsg(raw: unknown): ClientMsg | null {
         t: 'hello',
         v: raw.v,
         room,
-        name,
+        name: cleanText(name),
         color: c,
         device: d,
         space,

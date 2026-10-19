@@ -15,9 +15,11 @@ Units are meters and degrees. See [configuration.md](configuration.md) for a gui
 | `server.publicUrl` | string (uri) |  | Public URL (e.g. https://xr.example.com). Its origin is always allowed for WebSockets. |
 | `server.allowedOrigins` | string[] | `[]` | Extra allowed Origins for WebSocket connections. Same-host origins are always allowed. |
 | `server.maxRooms` | integer (≥ 1, ≤ 100000) | `500` | Maximum number of rooms held in memory. |
-| `server.trustForwardedFor` | boolean | `false` | Trust X-Forwarded-For for rate limiting (only behind a proxy that overwrites it). |
+| `server.maxStrokePoints` | integer (≥ 10000, ≤ 9007199254740991) | `5000000` | Whiteboard coordinates kept in memory across all rooms (about 10 bytes each); boards stop accepting ink when it is reached. |
+| `server.trustedProxyHops` | integer (≥ 0, ≤ 10) |  | Proxies/load balancers in front of the app that append to X-Forwarded-For (e.g. 1 for AWS ALB, 2 for Google Cloud load balancers). Used to tell clients apart for passcode rate limiting; 0 uses the socket address. |
+| `server.trustForwardedFor` | boolean | `false` | Deprecated: same as trustedProxyHops: 1. |
 | `server.allowServerOverride` | boolean | `false` | Allow the `?server=` URL parameter to point the client at another sync server. |
-| `server.csp` | `"off"` \| `"report-only"` \| `"enforce"` | `"report-only"` | Content-Security-Policy for the app page. Start with report-only, then enforce. |
+| `server.csp` | `"off"` \| `"report-only"` \| `"enforce"` | `"enforce"` | Content-Security-Policy for the app page. Use report-only to find what a custom setup needs before enforcing. |
 
 ## `auth`
 

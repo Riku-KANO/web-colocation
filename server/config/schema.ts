@@ -164,11 +164,13 @@ export const AppConfigSchema = z.strictObject({
 
       allowedOrigins: z.array(z.string().max(500)).default([]).describe('Extra allowed Origins for WebSocket connections. Same-host origins are always allowed.'),
       maxRooms: z.int().min(1).max(100000).default(500).describe('Maximum number of rooms held in memory.'),
-      trustForwardedFor: z.boolean().default(false).describe('Trust X-Forwarded-For for rate limiting (only behind a proxy that overwrites it).'),
+      maxStrokePoints: z.int().min(10000).default(5_000_000).describe('Whiteboard coordinates kept in memory across all rooms (about 10 bytes each); boards stop accepting ink when it is reached.'),
+      trustedProxyHops: z.int().min(0).max(10).optional().describe('Proxies/load balancers in front of the app that append to X-Forwarded-For (e.g. 1 for AWS ALB, 2 for Google Cloud load balancers). Used to tell clients apart for passcode rate limiting; 0 uses the socket address.'),
+      trustForwardedFor: z.boolean().default(false).describe('Deprecated: same as trustedProxyHops: 1.'),
 
       allowServerOverride: z.boolean().default(false).describe('Allow the `?server=` URL parameter to point the client at another sync server.'),
 
-      csp: z.enum(['off', 'report-only', 'enforce']).default('report-only').describe('Content-Security-Policy for the app page. Start with report-only, then enforce.'),
+      csp: z.enum(['off', 'report-only', 'enforce']).default('enforce').describe('Content-Security-Policy for the app page. Use report-only to find what a custom setup needs before enforcing.'),
     })
     .prefault({}),
   auth: z

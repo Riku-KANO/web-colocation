@@ -3,6 +3,7 @@
 
 import type { EventEmitter } from 'node:events';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { trustedHeadersProblem } from './auth.ts';
 import { attachColocationServer, type ColocationServer } from './colocationServer.ts';
 import type { LoadedConfig } from './config/load.ts';
 import { createHealthHandler, createHttpHandler, type Handler } from './http/handler.ts';
@@ -20,6 +21,11 @@ export interface ServerAppOptions {
   emptyRoomTtlMs?: number;
   saveDelayMs?: number;
   heartbeatMs?: number;
+  helloTimeoutMs?: number;
+  /** Address the app listens on; reloads that would trust identity headers on it are refused. */
+  listenHost?: string;
+  /** Serve /metrics on the main port too (default true; main.ts turns it off with a health port). */
+  publicMetrics?: boolean;
 }
 
 export interface ServerApp {
@@ -54,14 +60,19 @@ export function createServerApp(opts: ServerAppOptions): ServerApp {
     log,
     metrics,
     ready: true,
-    handler: createHttpHandler({ registry, metrics, log, isReady: () => app.ready }, { staticDir: opts.staticDir ?? null }),
+    handler: createHttpHandler({ registry, metrics, log, isReady: () => app.ready }, { staticDir: opts.staticDir ?? null, publicMetrics: opts.publicMetrics ?? true }),
     healthHandler: createHealthHandler({ registry, metrics, log, isReady: () => app.ready }),
     attach(httpServer) {
-      const ws = attachColocationServer(httpServer, { registry, log, metrics }, { heartbeatMs: opts.heartbeatMs });
+      const ws = attachColocationServer(httpServer, { registry, log, metrics }, { heartbeatMs: opts.heartbeatMs, helloTimeoutMs: opts.helloTimeoutMs });
       sockets.push(ws);
       return ws;
     },
     reload(loaded) {
+      const unsafe = opts.listenHost !== undefined ? trustedHeadersProblem(loaded.config.auth, opts.listenHost) : null;
+      if (unsafe) {
+        log.error(`configuration change ignored: ${unsafe}`);
+        return;
+      }
       registry.reload(loaded);
     },
     async shutdown() {
