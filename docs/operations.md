@@ -6,7 +6,7 @@
 |---|---|---|
 | `/healthz` | main + `HEALTH_PORT` | liveness — the process is up |
 | `/readyz` | main + `HEALTH_PORT` | readiness — `503` while shutting down |
-| `/metrics` | main + `HEALTH_PORT` | Prometheus text format |
+| `/metrics` | `HEALTH_PORT` (main port only when no health port is set) | Prometheus text format |
 | `/api/config` | main | lobby/branding data for the browser |
 | `/ws` | main | WebSocket sync |
 | `/room-assets/*` | main | files from `assets.dir` |

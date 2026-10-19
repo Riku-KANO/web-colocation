@@ -1,4 +1,7 @@
 {{- $sso := .Values.oauth2Proxy.enabled }}
+{{- if and $sso (not .Values.oauth2Proxy.emailDomains) (not .Values.oauth2Proxy.allowedGroups) }}
+{{- fail "oauth2Proxy: set emailDomains (e.g. [acme.example]) or allowedGroups to choose who may sign in. emailDomains: [\"*\"] allows every account the provider accepts." }}
+{{- end }}
 {{- define "web-colocation.oauth2ProxyContainer" }}
 - name: oauth2-proxy
   image: "{{ .Values.oauth2Proxy.image.repository }}:{{ .Values.oauth2Proxy.image.tag }}"

@@ -105,7 +105,7 @@ oauth2Proxy:
   provider: google                # google | entra-id | oidc | keycloak-oidc | github | gitlab ...
   clientId: ...
   existingSecret: colo-oauth2     # keys: client-secret, cookie-secret
-  emailDomains: [acme.example]
+  emailDomains: [acme.example]    # required (or allowedGroups); ["*"] only for single-tenant providers
 ```
 
 oauth2-proxy runs as a native sidecar in the same pod; the app listens only on `127.0.0.1` so the
@@ -117,7 +117,11 @@ Details: [auth.md](auth.md).
 - non-root (uid 1000), read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp
 - no service account token mounted
 - optional `NetworkPolicy` (`networkPolicy.enabled`, `networkPolicy.ingressFrom`)
-- the health port (8081) exposes only `/healthz`, `/readyz` and `/metrics`
+- the health port (8081) exposes only `/healthz`, `/readyz` and `/metrics` (which is not served
+  on the public port)
+- an enforced Content-Security-Policy and `X-Frame-Options`
+- set `config.server.trustedProxyHops` for your load balancer (see the examples) so passcode
+  rate limiting tells clients apart; details in [auth.md](auth.md#passcodes)
 
 ## Monitoring
 

@@ -33,6 +33,11 @@ oauth2Proxy:
   emailDomains: [acme.example]
 ```
 
+`emailDomains` or `allowedGroups` is required: the chart refuses to render without one, so a
+public provider (Google, GitHub, GitLab) cannot silently let in every account. Use
+`emailDomains: ["*"]` only when the provider itself is limited to your organization (for example
+a single-tenant Entra ID issuer URL).
+
 ```bash
 kubectl -n xr create secret generic colo-oauth2 \
   --from-literal=client-secret='<from your IdP>' \
@@ -66,6 +71,15 @@ Every participant is a **host** or a **member**:
 Hosts get **Room settings** and, depending on the room's `rules.permissions`, may be the only
 ones allowed to clear boards, reset objects or change settings.
 
+In a room defined in `rooms.list`, a host who is host only because they joined first can change
+the layout and rules for the meeting, but cannot set a passcode or rename the room, and their
+changes are not saved: the room returns to its saved settings when it empties. Configured hosts
+and admins change rooms for good. Settings saved while an id was an ad-hoc room are dropped once
+the id is added to `rooms.list`.
+
+Next to a name, ✓ means the name is the one from the identity provider. With
+`auth.allowDisplayNameOverride: true`, people who type a different name are shown without it.
+
 ## Who may enter a room
 
 ```yaml
@@ -86,6 +100,12 @@ people who are no longer allowed are removed from running rooms.
 
 Independent of SSO, a room can require a passcode (`passcodeHash`, generated with
 `npm run hash-passcode`), and hosts can set or remove one in the app unless the config file
-fixes it. Wrong attempts are rate limited per user (or per client IP; set
-`server.trustForwardedFor: true` when a proxy that overwrites `X-Forwarded-For` sits in front).
-Configured hosts and admins skip the passcode.
+fixes it. Configured hosts and admins skip the passcode.
+
+Wrong attempts are rate limited: 5 per 5 minutes per user, or per client address without SSO.
+After that, even the right passcode is refused until the window passes. Behind a load balancer
+every client arrives from the balancer's address, so tell the app how many proxies append to
+`X-Forwarded-For` with `server.trustedProxyHops` (AWS ALB: 1, Google Cloud load balancers: 2,
+plus 1 when the oauth2-proxy sidecar is enabled). Otherwise one person guessing locks everyone out
+of that room for 5 minutes. Entries further left in the header are what the client sent and are
+ignored; IPv6 clients are grouped by /64.

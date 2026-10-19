@@ -7,6 +7,7 @@ oauth2Proxy:
   oidcIssuerUrl: https://login.microsoftonline.com/<tenant-id>/v2.0
   clientId: 00000000-0000-0000-0000-000000000000
   existingSecret: colo-oauth2
+  # The tenant-specific issuer above already limits sign-in to your tenant; groups narrow it further.
   emailDomains: ["*"]
   allowedGroups:
     - 11111111-2222-3333-4444-555555555555

@@ -6,6 +6,41 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- Passcode attempts are counted before they are checked, so parallel guesses no longer slip past
+  the limit; passcode hashing work is capped.
+- Rate limiting uses the client address added by trusted proxies (`server.trustedProxyHops`,
+  examples for ALB and Google Cloud) instead of the client-controlled left end of
+  `X-Forwarded-For`; IPv6 clients are grouped by /64. `server.trustForwardedFor` is deprecated.
+- A full whiteboard can no longer make a room unjoinable: stroke points are quantized and the
+  per-room budget keeps the snapshot well below the send buffer cap. A process-wide budget
+  (`server.maxStrokePoints`) bounds whiteboard memory across rooms.
+- In rooms from the configuration, first-joiner hosts can no longer set a passcode or title, and
+  their changes are not saved. Settings saved for an ad-hoc id are ignored once the id is configured.
+- Refused joins no longer leave empty rooms in memory; settings changes are throttled; sockets
+  that never join are closed after 10 s; unknown WebSocket upgrades are closed.
+- "Verified" (✓) is shown only for names that come from the identity provider. Control and bidi
+  characters are removed from names, titles and room ids.
+- Domain allow lists use the part after the last `@`.
+- `trusted-headers` on a non-loopback address is refused on config reload and in the Vite dev
+  server, not only at startup.
+- An unreadable asset file no longer crashes the server. Every `/room-assets/` response is
+  sandboxed with CSP.
+- CSP is enforced by default and allows `blob:`/`data:` for embedded glTF data; pages send
+  `X-Frame-Options: SAMEORIGIN`. `/metrics` is served only on the health port when one is set.
+- Model loading checks redirects and every file a model refers to against the allowed origins, and
+  checks declared triangles, compressed sizes and embedded image dimensions before decoding.
+- The client no longer honours `?server=` when `/api/config` is unreachable.
+- Helm: `oauth2Proxy.emailDomains` no longer defaults to `*`; `emailDomains` or `allowedGroups`
+  is required.
+- Compose demos publish ports on localhost only; the TURN deny list covers CGNAT, loopback,
+  multicast and IPv6 private ranges. `hash-passcode` prompts without echoing.
+- Dependabot also tracks the chart's and compose files' images.
+
+### Fixed
+- Browser E2E tests close their pages after each test, so CI runners without a GPU no longer time
+  out on the XR test.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

@@ -3,6 +3,9 @@
 config:
   branding:
     productName: Acme XR Rooms
+  server:
+    # The ALB appends the client address to X-Forwarded-For (add 1 with oauth2Proxy.enabled).
+    trustedProxyHops: 1
 
 ingress:
   enabled: true
