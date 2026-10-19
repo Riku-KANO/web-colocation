@@ -28,7 +28,7 @@ services:
   # (or use STUNner / a managed TURN service) — see docs/turn.md.
   coturn:
     profiles: [turn]
-    image: coturn/coturn:4.7.0
+    image: coturn/coturn:4.18.0
     # Local only (external-ip is 127.0.0.1); set TURN_SECRET instead of the demo default.
     ports:
       - "127.0.0.1:3478:3478/udp"
