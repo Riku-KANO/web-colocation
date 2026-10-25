@@ -36,7 +36,7 @@ services:
       - --approval-prompt=auto
 
   dex:
-    image: ghcr.io/dexidp/dex:v2.45.0
+    image: ghcr.io/dexidp/dex:v2.46.1
     command: [dex, serve, /etc/dex/dex.yaml]
     ports: ["127.0.0.1:5556:5556"]
     volumes:
