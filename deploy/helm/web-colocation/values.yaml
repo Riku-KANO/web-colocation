@@ -59,7 +59,7 @@ oauth2Proxy:
   enabled: false
   image:
     repository: quay.io/oauth2-proxy/oauth2-proxy
-    tag: v7.15.5
+    tag: v7.15.6
     pullPolicy: IfNotPresent
   # google | entra-id | oidc | keycloak-oidc | github | gitlab ... (see oauth2-proxy docs)
   provider: oidc
